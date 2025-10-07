@@ -4,32 +4,14 @@ import StartPage from './StartPage.jsx';
 import './app.css';
 
 // With Vite proxy: leave API_BASE empty so we call /api/* locally
-const API_BASE = import.meta.env.VITE_API_BASE || ''; 
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
   // If VITE_API_BASE is set (e.g. https://api.yourdomain.com), use it. Otherwise fallback to /api for dev.
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-(async () => {
-  try {
-    await fetch('/api/scan');
-  } catch (e) {
-    console.error(e);
-  }
-})();
-
-/* ---------- QR parsing ----------
-   We try to pull useful bits commonly seen on your labels:
-   - grade:  SAR48 / SAR51
-   - railType: R260 / R350HT / R350LHT ...
-   - serial: long alphanumeric (e.g., A25060801805CD)
-   - spec:   "ATX 200/25C", "ATA 2DX059-25", etc.
-   - lengthM: 36m, 24m => "36", "24"
-*/
-
-
-
+/* ---------- QR parsing ---------- */
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -38,10 +20,10 @@ function parseQrPayload(raw) {
 
   const tokens = clean.split(/[ ,;|:/\t\r\n]+/).filter(Boolean);
 
-  let grade   = '';
-  let railType= '';
-  let serial  = '';
-  let spec    = '';
+  let grade = '';
+  let railType = '';
+  let serial = '';
+  let spec = '';
   let lengthM = '';
 
   // length
@@ -113,13 +95,12 @@ export default function App() {
     const parsed = parseQrPayload(rawText);
 
     const rec = {
-      // Backend expects/stores these:
-      serial: parsed.serial || rawText, // always send something
+      serial: parsed.serial || rawText,
       stage: 'received',
       operator,
       loadId, wagon1, wagon2, wagon3,
       timestamp: new Date().toISOString(),
-      // We also send the parsed extras for possible future use:
+      // extras for UI
       grade: parsed.grade,
       railType: parsed.railType,
       spec: parsed.spec,
@@ -137,8 +118,6 @@ export default function App() {
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data?.error || 'Save failed');
 
-      // The SQLite backend returns full rows from /staged; to reflect immediately,
-      // append our local rec (serial/operator/time + local extras for UI).
       setScans(prev => [
         {
           id: data.id || Date.now(),
@@ -150,7 +129,6 @@ export default function App() {
           wagon2: rec.wagon2,
           wagon3: rec.wagon3,
           timestamp: rec.timestamp,
-          // keep parsed extras for UI (not persisted by current backend)
           grade: rec.grade,
           railType: rec.railType,
           spec: rec.spec,
@@ -188,11 +166,7 @@ export default function App() {
       <header className="app-header">
         <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span
-              className="brand"
-              onClick={() => setView('home')}
-              style={{ cursor: 'pointer' }}
-            >
+            <span className="brand" onClick={() => setView('home')} style={{ cursor: 'pointer' }}>
               Rail Inventory
             </span>
             <span className="badge" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
@@ -256,8 +230,7 @@ export default function App() {
                   <div className="item" key={s.id || i}>
                     <div className="serial">{s.serial || '-'}</div>
                     <div className="meta">
-                      {/* These are shown if present (frontend parsed). The current DB doesn’t store them yet. */}
-                      { (s.grade || s.railType || s.spec || s.lengthM) ? (
+                      {(s.grade || s.railType || s.spec || s.lengthM) ? (
                         <>Grade: {s.grade || '-'} • Type: {s.railType || '-'} • Spec: {s.spec || '-'} • Len: {s.lengthM || '-'}m</>
                       ) : (
                         <span style={{ color: 'var(--muted)' }}>No extra QR fields detected</span>
