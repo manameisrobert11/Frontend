@@ -1,9 +1,12 @@
 [build]
- 
-  command = "npm ci && npm run build"
+  command = "npm install && npm run build"
   publish = "dist"
 
-# Proxy API to your Render backend
+# (Optional but recommended) lock Node for consistent builds
+[build.environment]
+  NODE_VERSION = "20"
+
+# Proxy API to Render
 [[redirects]]
   from = "/api/*"
   to = "https://backend-test-xfo3.onrender.com/api/:splat"
