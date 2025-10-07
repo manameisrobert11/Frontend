@@ -164,7 +164,7 @@ export default function App() {
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
       <header className="app-header">
-        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="brand" onClick={() => setView('home')} style={{ cursor: 'pointer' }}>
               Rail Inventory
@@ -173,7 +173,16 @@ export default function App() {
               {view === 'home' ? 'Home' : 'Scan'}
             </span>
           </div>
-          <div className="status">Status: {status}</div>
+
+          {/* ✅ Always-visible Start Scanning button */}
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <div className="status">Status: {status}</div>
+            {view !== 'scan' && (
+              <button className="btn btn-primary" onClick={() => setView('scan')}>
+                Start Scanning
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
