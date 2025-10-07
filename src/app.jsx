@@ -333,10 +333,11 @@ export default function App() {
 
       <footer className="footer">
         <div className="footer-inner">
-          <span>© {new Date().getFullYear()} Premium Star Graphics</span>
+          <span>© {new Date().getFullYear()} Top Notch Solutions</span>
           <span className="tag">Rail Inventory • v1.4</span>
         </div>
       </footer>
     </div>
   );
 }
+
