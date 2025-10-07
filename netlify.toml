@@ -1,28 +1,16 @@
-# netlify.toml (place this at the REPO ROOT)
 [build]
-  # Install deps and build INSIDE ./frontend
-  command = "npm --prefix frontend ci && npm --prefix frontend run build"
-  publish = "frontend/dist"
-
-# SPA fallback so refresh on deep routes doesn't 404
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
-
-# Long cache for hashed static assets
-[[headers]]
-  for = "/assets/*"
-  [headers.values]
-    Cache-Control = "public, max-age=31536000, immutable"
-
-    [build]
   command = "npm run build"
-  publish = "frontend/dist"
+  publish = "dist"
 
+# Proxy API to your Render backend
 [[redirects]]
   from = "/api/*"
   to = "https://backend-test-xfo3.onrender.com"
   status = 200
   force = true
 
+# Single-page app fallback
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
