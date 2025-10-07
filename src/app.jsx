@@ -11,6 +11,14 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
+(async () => {
+  try {
+    await fetch('/api/scan');
+  } catch (e) {
+    console.error(e);
+  }
+})();
+
 /* ---------- QR parsing ----------
    We try to pull useful bits commonly seen on your labels:
    - grade:  SAR48 / SAR51
@@ -19,7 +27,7 @@ const api = (p) => {
    - spec:   "ATX 200/25C", "ATA 2DX059-25", etc.
    - lengthM: 36m, 24m => "36", "24"
 */
-const res = await fetch('/api/scan');
+
 
 
 function parseQrPayload(raw) {
