@@ -1,213 +1,164 @@
+// src/scanner/Scanner.jsx
 import React, { useEffect, useRef, useState } from 'react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 
 /**
- * Scanner with:
- * - Camera device selector
- * - Start / Stop
- * - Autofocus / Tap-to-Focus / Focus Near / Focus Far
- * - Error/status line + iPhone HTTPS note
- *
+ * Scanner component
  * Props:
- *   onDetected(text: string)
+ *  - onDetected: (text: string) => void
+ *  - fps?: number (scan callback pacing)
  */
-export default function Scanner({ onDetected }) {
+export default function Scanner({ onDetected, fps = 10 }) {
   const videoRef = useRef(null);
   const readerRef = useRef(null);
-  const streamRef = useRef(null);
+  const trackRef = useRef(null);
 
   const [devices, setDevices] = useState([]);
-  const [selectedId, setSelectedId] = useState('');
-  const [running, setRunning] = useState(false);
-  const [msg, setMsg] = useState('');
+  const [deviceId, setDeviceId] = useState('');
+  const [active, setActive] = useState(false);
+  const [message, setMessage] = useState('Idle');
+  const [torchOn, setTorchOn] = useState(false);
 
-  // Load camera devices on mount
+  // simple de-dupe for rapid repeats
+  const lastScanRef = useRef({ text: '', time: 0 });
+
+  // List cameras on mount
   useEffect(() => {
-    let mounted = true;
     (async () => {
       try {
         const cams = await BrowserMultiFormatReader.listVideoInputDevices();
-        if (!mounted) return;
-        setDevices(cams || []);
-        if (cams?.length && !selectedId) setSelectedId(cams[0].deviceId);
+        setDevices(cams);
+        if (cams?.length && !deviceId) setDeviceId(cams[0].deviceId);
       } catch (e) {
-        setMsg(`No camera devices found (${e?.message || 'error'})`);
+        setMessage(`Camera list error: ${e?.message || e}`);
       }
     })();
-    return () => { mounted = false; stopScanner(); };
+    return () => stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const startScanner = async () => {
-    if (!selectedId) { setMsg('Please select a camera'); return; }
-    setMsg('');
-    try {
-      // Stop any old reader/stream first
-      await stopScanner();
+  // Start scanning when deviceId changes and active
+  useEffect(() => {
+    if (active && deviceId) {
+      start(deviceId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceId]);
 
+  const start = async (id) => {
+    stop();
+    setMessage('Starting camera…');
+    try {
       const reader = new BrowserMultiFormatReader();
       readerRef.current = reader;
 
-      // Ask for video stream first so we can tweak focus constraints
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: selectedId }, facingMode: 'environment' },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) videoRef.current.srcObject = stream;
-      await videoRef.current?.play();
-
-      // Try continuous autofocus (best effort)
-      await trySetFocus('continuous');
-
-      // Hand stream to zxing for decode
-      await reader.decodeFromVideoDevice(selectedId, videoRef.current, (result, err) => {
+      await reader.decodeFromVideoDevice(id, videoRef.current, (result, err, controls) => {
+        if (controls && !trackRef.current) {
+          // save the MediaStreamTrack for torch
+          const tracks = controls.stream?.getVideoTracks?.();
+          if (tracks && tracks[0]) trackRef.current = tracks[0];
+        }
         if (result) {
           const text = result.getText();
-          onDetected?.(text);
+          const now = Date.now();
+          if (
+            text &&
+            (text !== lastScanRef.current.text || now - lastScanRef.current.time > 1500)
+          ) {
+            lastScanRef.current = { text, time: now };
+            onDetected && onDetected(text);
+          }
         }
-        // ignore decode errors; they happen continuously
+        // throttle UI messages
+        if (err && err.name !== 'NotFoundException') {
+          setMessage(err.message || String(err));
+        } else {
+          setMessage('Scanning…');
+        }
       });
 
-      setRunning(true);
+      setActive(true);
     } catch (e) {
-      setMsg(`Start error: ${friendlyErr(e)}`);
-      setRunning(false);
-      await stopScanner();
+      setMessage(`Start error: ${e?.message || e}`);
+      setActive(false);
     }
   };
 
-  const stopScanner = async () => {
+  const stop = () => {
     try {
-      if (readerRef.current) {
-        try { readerRef.current.reset(); } catch {}
-        readerRef.current = null;
-      }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-        streamRef.current = null;
-      }
-      if (videoRef.current) videoRef.current.srcObject = null;
-      setRunning(false);
+      readerRef.current?.reset();
+      readerRef.current = null;
     } catch {}
-  };
-
-  // --- Focus helpers (not all browsers/devices support these) ---
-  const getVideoTrack = () => streamRef.current?.getVideoTracks?.()[0];
-
-  const trySetFocus = async (mode, distance) => {
-    const track = getVideoTrack();
-    if (!track) return;
-    const caps = track.getCapabilities?.();
-    // Only set properties the device supports
-    const constraints = { advanced: [] };
-    const adv = {};
-    if (caps?.focusMode && caps.focusMode.includes(mode)) adv.focusMode = mode;
-    if (distance != null && caps?.focusDistance) {
-      const { min, max } = caps.focusDistance;
-      const clamped = Math.min(max, Math.max(min, distance));
-      adv.focusDistance = clamped;
-    }
-    if (Object.keys(adv).length) constraints.advanced.push(adv);
-    if (!constraints.advanced.length) return;
     try {
-      await track.applyConstraints(constraints);
+      if (trackRef.current) {
+        trackRef.current.stop?.();
+        trackRef.current = null;
+      }
+    } catch {}
+    setActive(false);
+    setMessage('Stopped');
+  };
+
+  const toggle = () => {
+    if (active) stop(); else start(deviceId || undefined);
+  };
+
+  const toggleTorch = async () => {
+    try {
+      const track = trackRef.current;
+      if (!track) return;
+      const caps = track.getCapabilities?.();
+      if (!caps || !('torch' in caps)) {
+        setMessage('Torch not supported on this camera');
+        return;
+      }
+      await track.applyConstraints({ advanced: [{ torch: !torchOn }] });
+      setTorchOn((v) => !v);
     } catch (e) {
-      // best effort; some browsers throw if not supported
+      setMessage(`Torch error: ${e?.message || e}`);
     }
-  };
-
-  const handleAutofocus = () => trySetFocus('continuous');
-  const handleFocusNear = () => trySetFocus('manual', 0.0);  // near
-  const handleFocusFar  = () => {
-    const caps = getVideoTrack()?.getCapabilities?.();
-    const val = caps?.focusDistance?.max ?? 1.0;
-    return trySetFocus('manual', val);                        // far
-  };
-
-  const handleTapToFocus = (e) => {
-    // Map click position to a focusDistance heuristic (near at top-left, far at bottom-right)
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    // farther if click toward bottom-right
-    const caps = getVideoTrack()?.getCapabilities?.();
-    if (!caps?.focusDistance) return;
-    const { min, max } = caps.focusDistance;
-    const target = min + (max - min) * ((x + y) / 2);
-    trySetFocus('manual', target);
-  };
-
-  const friendlyErr = (e) => {
-    const m = String(e?.message || e || '');
-    if (/Permission|denied|dismissed/i.test(m)) return 'Permission dismissed';
-    if (/NotAllowedError/i.test(m)) return 'Permission denied';
-    if (/NotFoundError/i.test(m)) return 'No camera found';
-    return m;
   };
 
   return (
-    <div>
-      {/* Top controls row */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+    <div style={{ display: 'grid', gap: 12 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <select
+          value={deviceId}
+          onChange={(e) => setDeviceId(e.target.value)}
           className="input"
-          style={{ minWidth: 220 }}
-          value={selectedId}
-          onChange={e => setSelectedId(e.target.value)}
-          disabled={running}
+          style={{ maxWidth: 360 }}
+          disabled={active}
         >
-          {devices.map((d, i) => (
+          {devices.map((d) => (
             <option key={d.deviceId} value={d.deviceId}>
-              {d.label || `Video device ${i + 1}`}
+              {d.label || `Camera ${d.deviceId.slice(0, 6)}`}
             </option>
           ))}
-          {!devices.length && <option>Loading cameras…</option>}
+          {devices.length === 0 && <option>No cameras found</option>}
         </select>
-
-        {!running ? (
-          <button className="btn" onClick={startScanner}>Start Scanner</button>
-        ) : (
-          <button className="btn btn-outline" onClick={stopScanner}>Stop Scanner</button>
-        )}
+        <button className="btn" onClick={toggle}>{active ? 'Stop' : 'Start'} Scanner</button>
+        <button className="btn" onClick={toggleTorch} disabled={!active}>Toggle Torch</button>
+        <span className="status" style={{ marginLeft: 8 }}>{message}</span>
       </div>
 
-      {/* Focus buttons */}
-      <div style={{ display: 'flex', gap: 12, marginTop: 14, flexWrap: 'wrap' }}>
-        <button className="btn" onClick={handleAutofocus}>Autofocus</button>
-        <button className="btn" onClick={handleTapToFocus}>Tap-to-Focus</button>
-        <button className="btn" onClick={handleFocusNear}>Focus Near</button>
-        <button className="btn" onClick={handleFocusFar}>Focus Far</button>
-      </div>
-
-      {/* Status line */}
-      <div style={{ marginTop: 8, color: 'var(--muted)' }}>
-        {msg ? <>Start error: {msg}</> : ' '}
-      </div>
-
-      {/* Video box */}
-      <div
-        style={{
-          marginTop: 12,
-          background: '#0b0b12',
-          border: '1px solid #0d1b2e',
-          borderRadius: 16,
-          overflow: 'hidden',
-          boxShadow: '0 10px 24px rgba(3,27,78,.16)'
-        }}
-        onClick={handleTapToFocus}
-        title="Tap to focus"
-      >
+      <div style={{ position: 'relative', borderRadius: 16, overflow: 'hidden', boxShadow: '0 6px 20px rgba(2,6,23,.12)' }}>
         <video
           ref={videoRef}
-          playsInline
+          style={{ width: '100%', maxHeight: 360, display: 'block', background: '#000' }}
           muted
-          style={{ width: '100%', height: 260, background: 'black', objectFit: 'cover' }}
+          playsInline
+        />
+        {/* Simple overlay frame */}
+        <div
+          style={{
+            position: 'absolute', inset: 0, pointerEvents: 'none',
+            boxShadow: 'inset 0 0 0 3px rgba(37,99,235,.6)'
+          }}
         />
       </div>
 
-      <div style={{ marginTop: 8, color: 'var(--muted)' }}>
-        Note: focus features depend on device/browser. iPhone requires HTTPS.
+      <div className="status" style={{ fontSize: 12 }}>
+        Tip: if the camera fails to start on iPhone, ensure you are using HTTPS and granted camera permissions.
       </div>
     </div>
   );
