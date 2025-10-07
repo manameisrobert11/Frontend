@@ -4,8 +4,12 @@ import StartPage from './StartPage.jsx';
 import './app.css';
 
 // With Vite proxy: leave API_BASE empty so we call /api/* locally
-const API_BASE = '';
-const api = (p) => `/api${p.startsWith('/') ? p : `/${p}`}`;
+const API_BASE = import.meta.env.VITE_API_BASE || ''; 
+const api = (p) => {
+  const path = p.startsWith('/') ? p : `/${p}`;
+  // If VITE_API_BASE is set (e.g. https://api.yourdomain.com), use it. Otherwise fallback to /api for dev.
+  return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
+};
 
 /* ---------- QR parsing ----------
    We try to pull useful bits commonly seen on your labels:
@@ -15,6 +19,9 @@ const api = (p) => `/api${p.startsWith('/') ? p : `/${p}`}`;
    - spec:   "ATX 200/25C", "ATA 2DX059-25", etc.
    - lengthM: 36m, 24m => "36", "24"
 */
+const res = await fetch('/api/scan');
+
+
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
