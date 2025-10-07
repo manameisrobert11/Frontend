@@ -1,17 +1,17 @@
 // src/app.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
 import './app.css';
 
-// With Vite proxy: leave API_BASE empty so we call /api/* locally or use VITE_API_BASE in prod
+// ---- API helper (kept as you have it) ----
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-/* ---------- QR parsing (unchanged) ---------- */
+// ---- QR parsing (same logic you’ve been using) ----
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -58,21 +58,35 @@ function parseQrPayload(raw) {
 }
 
 export default function App() {
-  const [view, setView] = useState('home'); // 'home' | 'scan'
-  const [scans, setScans] = useState([]);
+  const [view, setView] = useState('home');         // 'home' | 'scan'
   const [status, setStatus] = useState('Ready');
+  const [scans, setScans] = useState([]);
 
-  // operator + batch/wagons (persistent form values)
+  // operator + batch/wagons (editable controls)
   const [operator, setOperator] = useState('Clerk A');
-  const [loadId, setLoadId] = useState('');
-  const [wagon1, setWagon1] = useState('');
-  const [wagon2, setWagon2] = useState('');
-  const [wagon3, setWagon3] = useState('');
+  const [loadId, setLoadId]     = useState('');
+  const [wagon1, setWagon1]     = useState('');
+  const [wagon2, setWagon2]     = useState('');
+  const [wagon3, setWagon3]     = useState('');
 
-  // NEW: pending preview (populated by the latest scan)
-  const [pending, setPending] = useState(null); // {serial, grade, railType, spec, lengthM, raw}
+  // NEW: pending capture (user reviews before saving)
+  const [pending, setPending] = useState(null);
+  // optional parsed extras for UI
+  const [qrExtras, setQrExtras] = useState({ grade:'', railType:'', spec:'', lengthM:'' });
 
-  // load staged from backend DB
+  // Beep sound (tiny inline wav so no asset file needed)
+  const beepRef = useRef(null);
+  const ensureBeep = () => {
+    if (!beepRef.current) {
+      const dataUri =
+        'data:audio/wav;base64,' +
+        'UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
+      beepRef.current = new Audio(dataUri);
+    }
+    try { beepRef.current.currentTime = 0; beepRef.current.play(); } catch {}
+  };
+
+  // Load staged list on mount
   useEffect(() => {
     (async () => {
       try {
@@ -84,45 +98,60 @@ export default function App() {
     })();
   }, []);
 
-  // 1) Scanner now only fills the preview (pending)
+  // Called by Scanner when it reads something.
+  // We DO NOT save yet. We fill the Controls + show a Pending panel.
   const onDetected = (rawText) => {
     const parsed = parseQrPayload(rawText);
-    // small debounce by raw text
-    if (App._last === parsed.raw && Date.now() - (App._lastAt || 0) < 1200) return;
-    App._last = parsed.raw; App._lastAt = Date.now();
-
-    setPending({
-      serial: parsed.serial || rawText,
-      grade: parsed.grade || '',
-      railType: parsed.railType || '',
-      spec: parsed.spec || '',
-      lengthM: parsed.lengthM || '',
-      raw: parsed.raw
-    });
-    // show visual status
-    setStatus('Preview ready — confirm to add');
+    // set controls defaults from parsed content (user can edit)
+    if (parsed.serial) {
+      // Don’t overwrite loadId/wagons—those are per-batch manual entries.
+      ensureBeep();
+      setPending({
+        serial: parsed.serial || rawText,
+        raw: parsed.raw,
+        capturedAt: new Date().toISOString(),
+      });
+      setQrExtras({
+        grade: parsed.grade || '',
+        railType: parsed.railType || '',
+        spec: parsed.spec || '',
+        lengthM: parsed.lengthM || '',
+      });
+      setStatus('Captured — review & Confirm');
+    } else {
+      // Still show something even if we couldn’t parse nicely
+      ensureBeep();
+      setPending({
+        serial: rawText,
+        raw: rawText,
+        capturedAt: new Date().toISOString(),
+      });
+      setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' });
+      setStatus('Captured — review & Confirm');
+    }
   };
 
-  // 2) Confirm = POST to backend and move into Staged Scans
+  // User confirms the pending capture -> POST to backend, add to staged list
   const confirmPending = async () => {
     if (!pending?.serial) {
-      alert('No pending scan to confirm.');
+      alert('Nothing to save yet. Scan a code first.');
       return;
     }
-    setStatus('Saving scan…');
     const rec = {
       serial: pending.serial,
       stage: 'received',
       operator,
       loadId, wagon1, wagon2, wagon3,
       timestamp: new Date().toISOString(),
-      // extras (not all are persisted in current DB, but we send them)
-      grade: pending.grade,
-      railType: pending.railType,
-      spec: pending.spec,
-      lengthM: pending.lengthM,
+      // extras (not necessarily stored by backend yet, but OK to send)
+      grade: qrExtras.grade,
+      railType: qrExtras.railType,
+      spec: qrExtras.spec,
+      lengthM: qrExtras.lengthM,
       raw: pending.raw
     };
+
+    setStatus('Saving…');
     try {
       const resp = await fetch(api('/scan'), {
         method: 'POST',
@@ -132,7 +161,7 @@ export default function App() {
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data?.error || 'Save failed');
 
-      // append locally so UI updates immediately
+      // update list immediately
       setScans(prev => [
         {
           id: data.id || Date.now(),
@@ -147,22 +176,23 @@ export default function App() {
           grade: rec.grade,
           railType: rec.railType,
           spec: rec.spec,
-          lengthM: rec.lengthM
+          lengthM: rec.lengthM,
         },
         ...prev
       ]);
+
       setPending(null);
+      setStatus('Ready');
     } catch (e) {
       console.error(e);
-      alert(e.message || 'Failed to save scan');
-    } finally {
+      alert(e.message || 'Failed to save');
       setStatus('Ready');
     }
   };
 
-  // 3) Discard = clear preview, do not post
   const discardPending = () => {
     setPending(null);
+    setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' });
     setStatus('Ready');
   };
 
@@ -188,7 +218,8 @@ export default function App() {
       <header className="app-header">
         <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span className="brand" onClick={() => setView('home')} style={{ cursor: 'pointer' }}>
+            <button className="btn btn-outline" onClick={() => setView('home')}>Home</button>
+            <span className="brand" style={{ cursor: 'pointer' }} onClick={() => setView('home')}>
               Rail Inventory
             </span>
             <span className="badge" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
@@ -209,40 +240,29 @@ export default function App() {
       ) : (
         <>
           <div className="grid" style={{ marginTop: 20 }}>
-            {/* Left: Scanner */}
             <section className="card">
               <h3>Scanner</h3>
+              {/* Your Scanner component has its own Start/Stop button inside */}
               <Scanner onDetected={onDetected} />
               {pending && (
-                <div className="card" style={{ marginTop: 14, display: 'flex', gap: 12, alignItems: 'center' }}>
-                  <div style={{ flex: 1 }}>
-                    <div className="serial">{pending.serial}</div>
-                    <div className="meta">
-                      {pending.grade || pending.railType || pending.spec || pending.lengthM
-                        ? <>Grade: {pending.grade || '-'} • Type: {pending.railType || '-'} • Spec: {pending.spec || '-'} • Len: {pending.lengthM || '-'}m</>
-                        : <span style={{ color: 'var(--muted)' }}>No extra QR fields detected</span>}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button className="btn btn-outline" onClick={discardPending}>Discard</button>
-                    <button className="btn" onClick={confirmPending}>Confirm & Add</button>
-                  </div>
+                <div className="notice" style={{ marginTop: 10 }}>
+                  <strong>Pending capture:</strong> {pending.serial}
                 </div>
               )}
             </section>
 
-            {/* Right: Controls */}
             <section className="card">
               <h3>Controls</h3>
               <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div>
-                  <label className="status">Load ID</label>
-                  <input className="input" value={loadId} onChange={e => setLoadId(e.target.value)} placeholder="e.g. L-2025-09-001" />
-                </div>
-                <div>
                   <label className="status">Operator</label>
                   <input className="input" value={operator} onChange={e => setOperator(e.target.value)} />
                 </div>
+                <div>
+                  <label className="status">Load ID</label>
+                  <input className="input" value={loadId} onChange={e => setLoadId(e.target.value)} placeholder="e.g. L-2025-09-001" />
+                </div>
+
                 <div>
                   <label className="status">Wagon 1 (Serial)</label>
                   <input className="input" value={wagon1} onChange={e => setWagon1(e.target.value)} placeholder="e.g. NPS-00123" />
@@ -255,14 +275,34 @@ export default function App() {
                   <label className="status">Wagon 3 (Serial)</label>
                   <input className="input" value={wagon3} onChange={e => setWagon3(e.target.value)} placeholder="e.g. NPS-00789" />
                 </div>
-                <div style={{ display: 'flex', alignItems: 'end', justifyContent: 'flex-end', gap: 8 }}>
+
+                {/* Read-only preview of parsed extras */}
+                <div>
+                  <label className="status">Grade</label>
+                  <input className="input" value={qrExtras.grade} readOnly />
+                </div>
+                <div>
+                  <label className="status">Rail Type</label>
+                  <input className="input" value={qrExtras.railType} readOnly />
+                </div>
+                <div>
+                  <label className="status">Spec</label>
+                  <input className="input" value={qrExtras.spec} readOnly />
+                </div>
+                <div>
+                  <label className="status">Length (m)</label>
+                  <input className="input" value={qrExtras.lengthM} readOnly />
+                </div>
+
+                <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                   <button className="btn btn-outline" onClick={() => setView('home')}>Back</button>
+                  <button className="btn btn-outline" onClick={discardPending} disabled={!pending}>Discard Pending</button>
+                  <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
                   <button className="btn" onClick={exportToExcel}>Export Excel (.xlsm)</button>
                 </div>
               </div>
             </section>
 
-            {/* Staged list */}
             <section className="card" style={{ gridColumn: '1 / -1' }}>
               <h3>Staged Scans</h3>
               <div className="list">
