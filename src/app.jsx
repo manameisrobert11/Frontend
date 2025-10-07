@@ -1,17 +1,17 @@
+// src/app.jsx
 import React, { useState, useEffect } from 'react';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
 import './app.css';
 
-// With Vite proxy: leave API_BASE empty so we call /api/* locally
+// With Vite proxy: leave API_BASE empty so we call /api/* locally or use VITE_API_BASE in prod
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
-  // If VITE_API_BASE is set (e.g. https://api.yourdomain.com), use it. Otherwise fallback to /api for dev.
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-/* ---------- QR parsing ---------- */
+/* ---------- QR parsing (unchanged) ---------- */
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -26,23 +26,18 @@ function parseQrPayload(raw) {
   let spec = '';
   let lengthM = '';
 
-  // length
   const lenTok = tokens.find(t => /^[0-9]{1,3}m$/i.test(t));
   if (lenTok) lengthM = lenTok.replace(/m/i, '');
 
-  // grade
   const gTok = tokens.find(t => /^SAR\d{2}$/i.test(t));
   if (gTok) grade = gTok.toUpperCase();
 
-  // rail type
   const tTok = tokens.find(t => /^R\d{3}[A-Z]*$/i.test(t));
   if (tTok) railType = tTok.toUpperCase();
 
-  // serial: 10–22 alnum with letters + digits
   const sTok = tokens.find(t => /^[A-Z0-9-]{10,22}$/i.test(t) && /[A-Z]/i.test(t) && /\d/.test(t));
   if (sTok) serial = sTok.toUpperCase();
 
-  // spec: pair or single that looks like ATX/ATA + detail
   for (let i = 0; i < tokens.length - 1; i++) {
     const pair = `${tokens[i]} ${tokens[i + 1]}`.trim();
     if (/^[A-Z]{2,4}\s+[0-9A-Z/.\-]{3,}$/.test(pair)) { spec = pair.toUpperCase(); break; }
@@ -67,12 +62,15 @@ export default function App() {
   const [scans, setScans] = useState([]);
   const [status, setStatus] = useState('Ready');
 
-  // operator + load/wagons
+  // operator + batch/wagons (persistent form values)
   const [operator, setOperator] = useState('Clerk A');
   const [loadId, setLoadId] = useState('');
   const [wagon1, setWagon1] = useState('');
   const [wagon2, setWagon2] = useState('');
   const [wagon3, setWagon3] = useState('');
+
+  // NEW: pending preview (populated by the latest scan)
+  const [pending, setPending] = useState(null); // {serial, grade, railType, spec, lengthM, raw}
 
   // load staged from backend DB
   useEffect(() => {
@@ -86,29 +84,45 @@ export default function App() {
     })();
   }, []);
 
-  const onDetected = async (rawText) => {
-    // debounce repeat reads within 1.5s
-    if (App._last === rawText && Date.now() - (App._lastAt || 0) < 1500) return;
-    App._last = rawText; App._lastAt = Date.now();
-
-    // Parse for display (even though backend stores core fields only)
+  // 1) Scanner now only fills the preview (pending)
+  const onDetected = (rawText) => {
     const parsed = parseQrPayload(rawText);
+    // small debounce by raw text
+    if (App._last === parsed.raw && Date.now() - (App._lastAt || 0) < 1200) return;
+    App._last = parsed.raw; App._lastAt = Date.now();
 
-    const rec = {
+    setPending({
       serial: parsed.serial || rawText,
+      grade: parsed.grade || '',
+      railType: parsed.railType || '',
+      spec: parsed.spec || '',
+      lengthM: parsed.lengthM || '',
+      raw: parsed.raw
+    });
+    // show visual status
+    setStatus('Preview ready — confirm to add');
+  };
+
+  // 2) Confirm = POST to backend and move into Staged Scans
+  const confirmPending = async () => {
+    if (!pending?.serial) {
+      alert('No pending scan to confirm.');
+      return;
+    }
+    setStatus('Saving scan…');
+    const rec = {
+      serial: pending.serial,
       stage: 'received',
       operator,
       loadId, wagon1, wagon2, wagon3,
       timestamp: new Date().toISOString(),
-      // extras for UI
-      grade: parsed.grade,
-      railType: parsed.railType,
-      spec: parsed.spec,
-      lengthM: parsed.lengthM,
-      raw: parsed.raw,
+      // extras (not all are persisted in current DB, but we send them)
+      grade: pending.grade,
+      railType: pending.railType,
+      spec: pending.spec,
+      lengthM: pending.lengthM,
+      raw: pending.raw
     };
-
-    setStatus('Saving scan…');
     try {
       const resp = await fetch(api('/scan'), {
         method: 'POST',
@@ -118,6 +132,7 @@ export default function App() {
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data?.error || 'Save failed');
 
+      // append locally so UI updates immediately
       setScans(prev => [
         {
           id: data.id || Date.now(),
@@ -132,16 +147,23 @@ export default function App() {
           grade: rec.grade,
           railType: rec.railType,
           spec: rec.spec,
-          lengthM: rec.lengthM,
+          lengthM: rec.lengthM
         },
         ...prev
       ]);
+      setPending(null);
     } catch (e) {
       console.error(e);
       alert(e.message || 'Failed to save scan');
     } finally {
       setStatus('Ready');
     }
+  };
+
+  // 3) Discard = clear preview, do not post
+  const discardPending = () => {
+    setPending(null);
+    setStatus('Ready');
   };
 
   const exportToExcel = async () => {
@@ -164,7 +186,7 @@ export default function App() {
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
       <header className="app-header">
-        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="brand" onClick={() => setView('home')} style={{ cursor: 'pointer' }}>
               Rail Inventory
@@ -173,16 +195,7 @@ export default function App() {
               {view === 'home' ? 'Home' : 'Scan'}
             </span>
           </div>
-
-          {/* ✅ Always-visible Start Scanning button */}
-          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-            <div className="status">Status: {status}</div>
-            {view !== 'scan' && (
-              <button className="btn btn-primary" onClick={() => setView('scan')}>
-                Start Scanning
-              </button>
-            )}
-          </div>
+          <div className="status">Status: {status}</div>
         </div>
       </header>
 
@@ -196,11 +209,29 @@ export default function App() {
       ) : (
         <>
           <div className="grid" style={{ marginTop: 20 }}>
+            {/* Left: Scanner */}
             <section className="card">
               <h3>Scanner</h3>
               <Scanner onDetected={onDetected} />
+              {pending && (
+                <div className="card" style={{ marginTop: 14, display: 'flex', gap: 12, alignItems: 'center' }}>
+                  <div style={{ flex: 1 }}>
+                    <div className="serial">{pending.serial}</div>
+                    <div className="meta">
+                      {pending.grade || pending.railType || pending.spec || pending.lengthM
+                        ? <>Grade: {pending.grade || '-'} • Type: {pending.railType || '-'} • Spec: {pending.spec || '-'} • Len: {pending.lengthM || '-'}m</>
+                        : <span style={{ color: 'var(--muted)' }}>No extra QR fields detected</span>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-outline" onClick={discardPending}>Discard</button>
+                    <button className="btn" onClick={confirmPending}>Confirm & Add</button>
+                  </div>
+                </div>
+              )}
             </section>
 
+            {/* Right: Controls */}
             <section className="card">
               <h3>Controls</h3>
               <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -231,6 +262,7 @@ export default function App() {
               </div>
             </section>
 
+            {/* Staged list */}
             <section className="card" style={{ gridColumn: '1 / -1' }}>
               <h3>Staged Scans</h3>
               <div className="list">
@@ -262,7 +294,7 @@ export default function App() {
       <footer className="footer">
         <div className="footer-inner">
           <span>© {new Date().getFullYear()} Premium Star Graphics</span>
-          <span className="tag">Rail Inventory • v1.3</span>
+          <span className="tag">Rail Inventory • v1.4</span>
         </div>
       </footer>
     </div>
