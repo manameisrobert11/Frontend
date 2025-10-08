@@ -1,212 +1,236 @@
 // src/scanner/Scanner.jsx
 import React, { useEffect, useRef, useState } from 'react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
-import {
-  BarcodeFormat,
-  DecodeHintType,
-  NotFoundException,
-} from '@zxing/library';
+import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 
-/**
- * Props:
- *  - onDetected(text)  : callback with decoded string
- *  - fps               : throttle callback (default 10)
- */
-export default function Scanner({ onDetected, fps = 10 }) {
+export default function Scanner({
+  onDetected,
+  minIntervalMs = 500,         // ignore same code within this window
+  preferFormats = ['qr_code', 'code_128', 'data_matrix'], // for BarcodeDetector
+}) {
   const videoRef = useRef(null);
-  const readerRef = useRef(null);
-  const trackRef  = useRef(null);
-  const rafRef    = useRef(null);     // for BarcodeDetector fallback
+  const streamRef = useRef(null);
+  const readerRef = useRef(null);         // ZXing reader
+  const rafRef = useRef(0);               // rAF loop id for BarcodeDetector
+  const lastHitRef = useRef({ text: '', at: 0 });
+  const trackRef = useRef(null);          // MediaStreamTrack (for torch / focus / zoom)
+
   const [devices, setDevices] = useState([]);
   const [deviceId, setDeviceId] = useState('');
   const [active, setActive] = useState(false);
-  const [msg, setMsg] = useState('Idle');
   const [torchOn, setTorchOn] = useState(false);
+  const [msg, setMsg] = useState('Idle');
 
-  const lastScanRef = useRef({ text: '', t: 0 });
+  // ---- tiny beep (no asset needed) ----
+  const beep = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = 880; // A5
+      o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.01);
+      o.start();
+      setTimeout(() => {
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.1);
+        o.stop(ctx.currentTime + 0.12);
+        ctx.close();
+      }, 90);
+    } catch {}
+  };
 
-  // Build strong ZXing hints for QR & common 1D/2D
-  const hints = new Map();
-  hints.set(DecodeHintType.TRY_HARDER, true);
-  hints.set(DecodeHintType.ALSO_INVERTED, true);
-  hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-    BarcodeFormat.QR_CODE,
-    BarcodeFormat.DATA_MATRIX,
-    BarcodeFormat.CODE_128,
-    BarcodeFormat.CODE_39,
-    BarcodeFormat.EAN_13,
-    BarcodeFormat.ITF,
-  ]);
-
-  // List cameras
+  // ---- enumerate cameras on mount ----
   useEffect(() => {
     (async () => {
       try {
         const cams = await BrowserMultiFormatReader.listVideoInputDevices();
         setDevices(cams);
-        // prefer a rear/environment camera if label hints it
-        const rear = cams.find(c => /back|rear|environment/i.test(c.label || ''));
-        setDeviceId((rear || cams[0])?.deviceId || '');
+        if (cams.length && !deviceId) setDeviceId(cams[0].deviceId);
       } catch (e) {
         setMsg(`Camera list error: ${e?.message || e}`);
       }
     })();
-
     return () => stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    // when user selects device while active → restart
-    if (active && deviceId) start(deviceId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deviceId]);
-
-  const start = async (id) => {
-    stop();
-    setMsg('Starting camera…');
+  // stop everything
+  const stop = () => {
+    try {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+    } catch {}
+    try { readerRef.current?.reset(); } catch {}
+    readerRef.current = null;
 
     try {
-      const reader = new BrowserMultiFormatReader(hints);
-      // reduce decode frequency a bit; helps stability
-      reader.timeBetweenDecodingAttempts = Math.max(50, 1000 / fps);
-      readerRef.current = reader;
+      streamRef.current?.getTracks?.().forEach(t => t.stop());
+      streamRef.current = null;
+    } catch {}
+    trackRef.current = null;
 
-      // high-res rear camera constraints for better QR pixels
-      const constraints = {
-        video: {
-          deviceId: id ? { exact: id } : undefined,
-          facingMode: id ? undefined : { ideal: 'environment' },
-          width: { ideal: 1920 },   // try 1080–2160
-          height: { ideal: 1080 },
-          focusMode: 'continuous',
-        },
-        audio: false,
-      };
+    setActive(false);
+    setTorchOn(false);
+    setMsg('Stopped');
+  };
 
-      await reader.decodeFromConstraints(constraints, videoRef.current, (result, err, controls) => {
-        if (controls && !trackRef.current) {
-          const tracks = controls.stream?.getVideoTracks?.();
-          if (tracks && tracks[0]) {
-            trackRef.current = tracks[0];
-            // try to push continuous focus if supported
-            try {
-              const caps = trackRef.current.getCapabilities?.();
-              if (caps?.focusMode?.includes?.('continuous')) {
-                trackRef.current.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
-              }
-              // small zoom helps QR detection a lot if available
-              if (caps?.zoom) {
-                const mid = (caps.zoom.max + caps.zoom.min) / 2;
-                trackRef.current.applyConstraints({ advanced: [{ zoom: Math.min(2, mid || 1.5) }] });
-              }
-            } catch {}
+  // apply nice camera constraints: back camera, hi-res, continuous focus
+  const getConstraints = (id) => ({
+    audio: false,
+    video: {
+      deviceId: id ? { exact: id } : undefined,
+      facingMode: id ? undefined : { ideal: 'environment' },
+      width:  { ideal: 1920 },
+      height: { ideal: 1080 },
+      // Some browsers honor these via applyConstraints on the track instead:
+      focusMode: 'continuous',
+      frameRate: { ideal: 30, max: 60 },
+      advanced: [{ focusMode: 'continuous' }],
+    }
+  });
+
+  // try to turn on continuous focus / zoom a bit for faster reads
+  const tuneTrack = async (track) => {
+    try {
+      trackRef.current = track;
+      const caps = track.getCapabilities?.() || {};
+      const cons = track.getConstraints?.() || {};
+      const advanced = [];
+
+      if (caps.focusMode && caps.focusMode.includes('continuous')) {
+        advanced.push({ focusMode: 'continuous' });
+      }
+      if (caps.zoom && typeof caps.zoom.min === 'number') {
+        const midZoom = Math.min(caps.zoom.max, Math.max(caps.zoom.min, (caps.zoom.max * 0.3)));
+        advanced.push({ zoom: midZoom });
+      }
+
+      if (advanced.length) await track.applyConstraints({ ...cons, advanced });
+    } catch {}
+  };
+
+  // ---- BarcodeDetector fast path ----
+  const startWithBarcodeDetector = async () => {
+    setMsg('Starting (BarcodeDetector)…');
+    const constraints = getConstraints(deviceId);
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    streamRef.current = stream;
+    const track = stream.getVideoTracks()[0];
+    await tuneTrack(track);
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+    }
+
+    const detector = new window.BarcodeDetector({ formats: preferFormats });
+    setActive(true);
+    setMsg('Scanning…');
+
+    const loop = async () => {
+      if (!videoRef.current || !streamRef.current) return;
+      try {
+        const codes = await detector.detect(videoRef.current);
+        if (codes?.length) {
+          // take the longest text (QR sometimes returns multiple)
+          const best = codes
+            .map(c => (c.rawValue || '').trim())
+            .filter(Boolean)
+            .sort((a,b)=>b.length-a.length)[0];
+
+          if (best) {
+            const now = performance.now();
+            const { text, at } = lastHitRef.current;
+            if (best !== text || (now - at) > minIntervalMs) {
+              lastHitRef.current = { text: best, at: now };
+              beep();
+              onDetected?.(best);
+            }
           }
         }
+      } catch (e) {
+        // If detector fails repeatedly, we’ll fall back when user restarts
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+  };
 
-        if (result) {
-          const text = result.getText();
-          const now = Date.now();
-          if (text && (text !== lastScanRef.current.text || now - lastScanRef.current.t > 1200)) {
-            lastScanRef.current = { text, t: now };
-            onDetected?.(text);
-          }
-          setMsg('Scanning…');
-          return;
+  // ---- ZXing fallback ----
+  const startWithZXing = async () => {
+    setMsg('Starting (ZXing)…');
+
+    // Hints for speed/robustness
+    const hints = new Map();
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    hints.set(DecodeHintType.ALSO_INVERTED, true);
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.QR_CODE,
+      BarcodeFormat.DATA_MATRIX,
+      BarcodeFormat.CODE_128,
+      BarcodeFormat.CODE_39,
+      BarcodeFormat.EAN_13,
+      BarcodeFormat.EAN_8,
+      BarcodeFormat.UPC_A,
+    ]);
+
+    const reader = new BrowserMultiFormatReader(hints);
+    reader.timeBetweenDecodingAttempts = 50; // ~20fps
+    readerRef.current = reader;
+
+    await reader.decodeFromVideoDevice(deviceId || undefined, videoRef.current, (result, err, controls) => {
+      if (controls && !trackRef.current) {
+        const tracks = controls.stream?.getVideoTracks?.();
+        if (tracks && tracks[0]) tuneTrack(tracks[0]);
+      }
+      if (result) {
+        const best = result.getText();
+        const now = performance.now();
+        const { text, at } = lastHitRef.current;
+        if (best && (best !== text || (now - at) > minIntervalMs)) {
+          lastHitRef.current = { text: best, at: now };
+          beep();
+          onDetected?.(best);
         }
+        setMsg('Scanning…');
+      } else if (err && err.name !== 'NotFoundException') {
+        setMsg(err.message || String(err));
+      } else {
+        setMsg('Scanning…');
+      }
+    });
 
-        // Non-fatal errors while scanning
-        if (err && !(err instanceof NotFoundException)) {
-          setMsg(err.message || String(err));
-        } else {
-          setMsg('Scanning…');
-        }
-      });
+    setActive(true);
+  };
 
-      setActive(true);
-
-      // Start BarcodeDetector fallback if supported
-      if ('BarcodeDetector' in window) startFallbackDetector();
+  const start = async () => {
+    stop();
+    try {
+      if ('BarcodeDetector' in window) {
+        await startWithBarcodeDetector();
+      } else {
+        await startWithZXing();
+      }
     } catch (e) {
       setMsg(`Start error: ${e?.message || e}`);
       setActive(false);
     }
   };
 
-  const startFallbackDetector = async () => {
-    try {
-      const supported = await window.BarcodeDetector.getSupportedFormats?.();
-      const want = ['qr_code', 'data_matrix', 'code_128', 'code_39', 'ean_13'].filter(f =>
-        supported?.includes?.(f)
-      );
-      if (!want.length) return;
-
-      const det = new window.BarcodeDetector({ formats: want });
-
-      const tick = async () => {
-        if (!active) return;
-        try {
-          const v = videoRef.current;
-          if (v && v.readyState >= 2) {
-            const barcodes = await det.detect(v);
-            if (barcodes?.length) {
-              const text = barcodes[0].rawValue || barcodes[0].rawValueText || '';
-              if (text) {
-                const now = Date.now();
-                if (text !== lastScanRef.current.text || now - lastScanRef.current.t > 1200) {
-                  lastScanRef.current = { text, t: now };
-                  onDetected?.(text);
-                }
-              }
-            }
-          }
-        } catch {}
-        rafRef.current = requestAnimationFrame(tick);
-      };
-
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(tick);
-    } catch {}
-  };
-
-  const stop = () => {
-    try { readerRef.current?.reset(); } catch {}
-    readerRef.current = null;
-
-    try { if (trackRef.current) trackRef.current.stop?.(); } catch {}
-    trackRef.current = null;
-
-    try { cancelAnimationFrame(rafRef.current); } catch {}
-    rafRef.current = null;
-
-    setActive(false);
-    setMsg('Stopped');
-  };
-
-  const toggle = () => (active ? stop() : start(deviceId || undefined));
+  const toggle = () => (active ? stop() : start());
 
   const toggleTorch = async () => {
     try {
-      const t = trackRef.current;
-      if (!t) return;
-      const caps = t.getCapabilities?.();
-      if (!caps || !('torch' in caps)) return setMsg('Torch not supported on this camera');
-      await t.applyConstraints({ advanced: [{ torch: !torchOn }] });
+      const track = trackRef.current;
+      if (!track) return setMsg('Torch not ready');
+      const caps = track.getCapabilities?.();
+      if (!caps || !('torch' in caps)) return setMsg('Torch not supported');
+      await track.applyConstraints({ advanced: [{ torch: !torchOn }] });
       setTorchOn(v => !v);
     } catch (e) {
       setMsg(`Torch error: ${e?.message || e}`);
-    }
-  };
-
-  const tapToFocus = async (x, y) => {
-    try {
-      const t = trackRef.current;
-      if (!t) return;
-      // Some Android browsers support pointsOfInterest
-      await t.applyConstraints({ advanced: [{ pointsOfInterest: [{ x, y }] }] });
-      setMsg('Focus requested');
-    } catch (e) {
-      setMsg(`Focus error: ${e?.message || e}`);
     }
   };
 
@@ -215,50 +239,41 @@ export default function Scanner({ onDetected, fps = 10 }) {
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <select
           value={deviceId}
-          onChange={(e) => setDeviceId(e.target.value)}
+          onChange={e => setDeviceId(e.target.value)}
           className="input"
-          style={{ maxWidth: 360 }}
+          style={{ minWidth: 240, maxWidth: 360 }}
           disabled={active}
         >
-          {devices.map((d) => (
+          {devices.length === 0 && <option>No cameras found</option>}
+          {devices.map(d => (
             <option key={d.deviceId} value={d.deviceId}>
               {d.label || `Camera ${d.deviceId.slice(0, 6)}`}
             </option>
           ))}
-          {!devices.length && <option>No cameras found</option>}
         </select>
-
         <button className="btn" onClick={toggle}>{active ? 'Stop' : 'Start'} Scanner</button>
-        <button className="btn" onClick={toggleTorch} disabled={!active}>
-          {torchOn ? 'Torch Off' : 'Torch On'}
-        </button>
+        <button className="btn" onClick={toggleTorch} disabled={!active}>Toggle Torch</button>
         <span className="status" style={{ marginLeft: 8 }}>{msg}</span>
       </div>
 
-      <div
-        style={{ position: 'relative', borderRadius: 16, overflow: 'hidden',
-                 boxShadow: '0 6px 20px rgba(2,6,23,.12)' }}
-        onClick={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          tapToFocus((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
-        }}
-        title="Tap to focus"
-      >
+      <div style={{ position: 'relative', borderRadius: 16, overflow: 'hidden', boxShadow: '0 6px 20px rgba(2,6,23,.12)' }}>
         <video
           ref={videoRef}
           style={{ width: '100%', maxHeight: 360, display: 'block', background: '#000' }}
           muted
           playsInline
         />
-        {/* scan frame */}
-        <div style={{
-          position:'absolute', inset: '10% 15%',
-          border: '3px solid rgba(37,99,235,.7)', borderRadius: 12, pointerEvents:'none'
-        }}/>
+        {/* Scan frame overlay */}
+        <div
+          style={{
+            position: 'absolute', inset: 0, pointerEvents: 'none',
+            boxShadow: 'inset 0 0 0 3px rgba(37,99,235,.6)'
+          }}
+        />
       </div>
 
       <div className="status" style={{ fontSize: 12 }}>
-        Tip: Use good lighting, fill the frame (QR ~ 50–70% width), and try the rear camera. iPhone requires HTTPS.
+        Tip: iPhone needs HTTPS to allow camera. On dark labels, enable torch and fill most of the frame for fastest locks.
       </div>
     </div>
   );
