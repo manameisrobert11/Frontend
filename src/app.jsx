@@ -11,7 +11,7 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-// ---- QR parsing (same logic you’ve been using) ----
+// ---- QR parsing (same as before) ----
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -62,23 +62,18 @@ export default function App() {
   const [status, setStatus] = useState('Ready');
   const [scans, setScans] = useState([]);
 
-  // operator + batch/wagons (editable controls)
+  // operator + wagon ID (single, assigned per scan)
   const [operator, setOperator] = useState('Clerk A');
-  const [loadId, setLoadId]     = useState('');
-  const [wagon1, setWagon1]     = useState('');
-  const [wagon2, setWagon2]     = useState('');
-  const [wagon3, setWagon3]     = useState('');
+  const [wagonId, setWagonId]   = useState('');
 
   // pending capture (review before saving)
   const [pending, setPending] = useState(null);
-  // parsed extras for UI preview
   const [qrExtras, setQrExtras] = useState({ grade:'', railType:'', spec:'', lengthM:'' });
 
-  // ⚠️ NEW: duplicate prompt state
-  const [dupPrompt, setDupPrompt] = useState(null); 
-  // shape: { serial, matches: [...], candidate: {pending, qrExtras} }
+  // Duplicate prompt
+  const [dupPrompt, setDupPrompt] = useState(null);
 
-  // Beep sounds
+  // Beeps
   const beepRef = useRef(null);
   const ensureBeep = (hz = 1500, ms = 120) => {
     if (!beepRef.current) {
@@ -88,7 +83,6 @@ export default function App() {
       beepRef.current = new Audio(dataUri);
     }
     try {
-      // Some browsers ignore pitch on <audio> so we quickly fake it by playbackRate
       beepRef.current.playbackRate = Math.max(0.5, Math.min(2, hz / 1500));
       beepRef.current.currentTime = 0;
       beepRef.current.play();
@@ -109,7 +103,7 @@ export default function App() {
     })();
   }, []);
 
-  // fast lookup set for duplicates (case-insensitive)
+  // fast lookup for duplicates
   const scanSerialSet = useMemo(() => {
     const s = new Set();
     for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
@@ -122,17 +116,14 @@ export default function App() {
     return scans.filter(r => String(r.serial || '').trim().toUpperCase() === key);
   };
 
-  // Called by Scanner when it reads something.
-  // We DO NOT save yet. We fill the Controls + show a Pending panel.
+  // Called by Scanner when it reads something
   const onDetected = (rawText) => {
     const parsed = parseQrPayload(rawText);
     const serial = parsed.serial || rawText;
 
-    // If we have a serial, check duplicate against staged list
     if (serial) {
       const matches = findDuplicates(serial);
       if (matches.length > 0) {
-        // show warning prompt; let user decide to continue or discard
         warnBeep();
         setDupPrompt({
           serial: String(serial).toUpperCase(),
@@ -152,11 +143,10 @@ export default function App() {
           }
         });
         setStatus('Duplicate detected — awaiting decision');
-        return; // do not set pending yet
+        return;
       }
     }
 
-    // Normal non-duplicate flow
     okBeep();
     setPending({
       serial: (parsed.serial || rawText),
@@ -172,7 +162,7 @@ export default function App() {
     setStatus('Captured — review & Confirm');
   };
 
-  // When user decides from the duplicate modal
+  // Duplicate modal actions
   const handleDupDiscard = () => {
     setDupPrompt(null);
     setPending(null);
@@ -188,14 +178,13 @@ export default function App() {
     setStatus('Captured — review & Confirm');
   };
 
-  // User confirms the pending capture -> POST to backend, add to staged list
+  // Confirm save
   const confirmPending = async () => {
     if (!pending?.serial) {
       alert('Nothing to save yet. Scan a code first.');
       return;
     }
 
-    // Safety: re-check duplicate just before save (in case list changed)
     const dupNow = findDuplicates(pending.serial);
     if (dupNow.length > 0 && !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)) {
       return;
@@ -205,9 +194,8 @@ export default function App() {
       serial: pending.serial,
       stage: 'received',
       operator,
-      loadId, wagon1, wagon2, wagon3,
+      wagonId, // ← single Wagon ID tied to this scan
       timestamp: new Date().toISOString(),
-      // extras (ok to send)
       grade: qrExtras.grade,
       railType: qrExtras.railType,
       spec: qrExtras.spec,
@@ -225,17 +213,13 @@ export default function App() {
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data?.error || 'Save failed');
 
-      // update list immediately
       setScans(prev => [
         {
           id: data.id || Date.now(),
           serial: rec.serial,
           stage: rec.stage,
           operator: rec.operator,
-          loadId: rec.loadId,
-          wagon1: rec.wagon1,
-          wagon2: rec.wagon2,
-          wagon3: rec.wagon3,
+          wagonId: rec.wagonId,
           timestamp: rec.timestamp,
           grade: rec.grade,
           railType: rec.railType,
@@ -279,27 +263,13 @@ export default function App() {
 
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
-      {/* ⚠️ Duplicate modal */}
+      {/* Duplicate modal */}
       {dupPrompt && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)',
-            display: 'grid', placeItems: 'center', zIndex: 50, padding: 16
-          }}
-        >
-          <div
-            className="card"
-            style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)',
-              boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}
-          >
+        <div role="dialog" aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}>
+          <div className="card" style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-              <div style={{
-                width: 40, height: 40, borderRadius: 9999,
-                display: 'grid', placeItems: 'center',
-                background: 'rgba(220, 38, 38, .1)', color: 'rgb(220,38,38)', fontSize: 22
-              }}>⚠️</div>
+              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0 }}>QR already scanned</h3>
                 <div className="status" style={{ marginTop: 6 }}>
@@ -312,8 +282,7 @@ export default function App() {
                       <div className="meta">
                         {m.stage} • {m.operator} • {new Date(m.timestamp || Date.now()).toLocaleString()}
                       </div>
-                      {(m.loadId || m.wagon1 || m.wagon2 || m.wagon3) &&
-                        <div className="meta">Load: {m.loadId || '-'} | W1: {m.wagon1 || '-'} | W2: {m.wagon2 || '-'} | W3: {m.wagon3 || '-'}</div>}
+                      {!!m.wagonId && <div className="meta">Wagon: {m.wagonId}</div>}
                     </div>
                   ))}
                 </div>
@@ -354,14 +323,12 @@ export default function App() {
           <div className="grid" style={{ marginTop: 20 }}>
             <section className="card">
               <h3>Scanner</h3>
-              {/* Your Scanner component has its own Start/Stop button inside */}
               <Scanner onDetected={onDetected} />
               {pending && (
                 <div className="notice" style={{ marginTop: 10 }}>
                   <strong>Pending capture:</strong> {pending.serial}
                 </div>
               )}
-              {/* Gentle inline warning if this pending is a known duplicate */}
               {pending?.serial && scanSerialSet.has(String(pending.serial).trim().toUpperCase()) && (
                 <div className="notice" style={{ marginTop: 8, color: 'rgb(220,38,38)' }}>
                   ⚠️ Warning: this QR matches an already staged serial.
@@ -377,21 +344,13 @@ export default function App() {
                   <input className="input" value={operator} onChange={e => setOperator(e.target.value)} />
                 </div>
                 <div>
-                  <label className="status">Load ID</label>
-                  <input className="input" value={loadId} onChange={e => setLoadId(e.target.value)} placeholder="e.g. L-2025-09-001" />
-                </div>
-
-                <div>
-                  <label className="status">Wagon 1 (Serial)</label>
-                  <input className="input" value={wagon1} onChange={e => setWagon1(e.target.value)} placeholder="e.g. NPS-00123" />
-                </div>
-                <div>
-                  <label className="status">Wagon 2 (Serial)</label>
-                  <input className="input" value={wagon2} onChange={e => setWagon2(e.target.value)} placeholder="e.g. NPS-00456" />
-                </div>
-                <div>
-                  <label className="status">Wagon 3 (Serial)</label>
-                  <input className="input" value={wagon3} onChange={e => setWagon3(e.target.value)} placeholder="e.g. NPS-00789" />
+                  <label className="status">Wagon ID</label>
+                  <input
+                    className="input"
+                    value={wagonId}
+                    onChange={e => setWagonId(e.target.value)}
+                    placeholder="e.g. WGN-0123"
+                  />
                 </div>
 
                 {/* Read-only preview of parsed extras */}
@@ -438,9 +397,7 @@ export default function App() {
                     <div className="meta">
                       {s.stage} • {s.operator} • {new Date(s.timestamp || Date.now()).toLocaleString()}
                     </div>
-                    {(s.loadId || s.wagon1 || s.wagon2 || s.wagon3) && (
-                      <div className="meta">Load: {s.loadId || '-'} | W1: {s.wagon1 || '-'} | W2: {s.wagon2 || '-'} | W3: {s.wagon3 || '-'}</div>
-                    )}
+                    {!!s.wagonId && <div className="meta">Wagon: {s.wagonId}</div>}
                   </div>
                 ))}
               </div>
@@ -451,8 +408,8 @@ export default function App() {
 
       <footer className="footer">
         <div className="footer-inner">
-          <span>© {new Date().getFullYear()} Top Notch Solutions</span>
-          <span className="tag">Rail Inventory • v1.5</span>
+          <span>© {new Date().getFullYear()} Premium Star Graphics</span>
+          <span className="tag">Rail Inventory • v1.6</span>
         </div>
       </footer>
     </div>
