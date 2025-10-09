@@ -1,5 +1,5 @@
 // src/app.jsx
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
 import './app.css';
@@ -69,22 +69,33 @@ export default function App() {
   const [wagon2, setWagon2]     = useState('');
   const [wagon3, setWagon3]     = useState('');
 
-  // NEW: pending capture (user reviews before saving)
+  // pending capture (review before saving)
   const [pending, setPending] = useState(null);
-  // optional parsed extras for UI
+  // parsed extras for UI preview
   const [qrExtras, setQrExtras] = useState({ grade:'', railType:'', spec:'', lengthM:'' });
 
-  // Beep sound (tiny inline wav so no asset file needed)
+  // ⚠️ NEW: duplicate prompt state
+  const [dupPrompt, setDupPrompt] = useState(null); 
+  // shape: { serial, matches: [...], candidate: {pending, qrExtras} }
+
+  // Beep sounds
   const beepRef = useRef(null);
-  const ensureBeep = () => {
+  const ensureBeep = (hz = 1500, ms = 120) => {
     if (!beepRef.current) {
       const dataUri =
         'data:audio/wav;base64,' +
         'UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
       beepRef.current = new Audio(dataUri);
     }
-    try { beepRef.current.currentTime = 0; beepRef.current.play(); } catch {}
+    try {
+      // Some browsers ignore pitch on <audio> so we quickly fake it by playbackRate
+      beepRef.current.playbackRate = Math.max(0.5, Math.min(2, hz / 1500));
+      beepRef.current.currentTime = 0;
+      beepRef.current.play();
+    } catch {}
   };
+  const okBeep = () => ensureBeep(1500, 120);
+  const warnBeep = () => ensureBeep(800, 160);
 
   // Load staged list on mount
   useEffect(() => {
@@ -98,37 +109,83 @@ export default function App() {
     })();
   }, []);
 
+  // fast lookup set for duplicates (case-insensitive)
+  const scanSerialSet = useMemo(() => {
+    const s = new Set();
+    for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
+    return s;
+  }, [scans]);
+
+  const findDuplicates = (serial) => {
+    const key = String(serial || '').trim().toUpperCase();
+    if (!key) return [];
+    return scans.filter(r => String(r.serial || '').trim().toUpperCase() === key);
+  };
+
   // Called by Scanner when it reads something.
   // We DO NOT save yet. We fill the Controls + show a Pending panel.
   const onDetected = (rawText) => {
     const parsed = parseQrPayload(rawText);
-    // set controls defaults from parsed content (user can edit)
-    if (parsed.serial) {
-      // Don’t overwrite loadId/wagons—those are per-batch manual entries.
-      ensureBeep();
-      setPending({
-        serial: parsed.serial || rawText,
-        raw: parsed.raw,
-        capturedAt: new Date().toISOString(),
-      });
-      setQrExtras({
-        grade: parsed.grade || '',
-        railType: parsed.railType || '',
-        spec: parsed.spec || '',
-        lengthM: parsed.lengthM || '',
-      });
-      setStatus('Captured — review & Confirm');
-    } else {
-      // Still show something even if we couldn’t parse nicely
-      ensureBeep();
-      setPending({
-        serial: rawText,
-        raw: rawText,
-        capturedAt: new Date().toISOString(),
-      });
-      setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' });
-      setStatus('Captured — review & Confirm');
+    const serial = parsed.serial || rawText;
+
+    // If we have a serial, check duplicate against staged list
+    if (serial) {
+      const matches = findDuplicates(serial);
+      if (matches.length > 0) {
+        // show warning prompt; let user decide to continue or discard
+        warnBeep();
+        setDupPrompt({
+          serial: String(serial).toUpperCase(),
+          matches,
+          candidate: {
+            pending: {
+              serial: String(serial).toUpperCase(),
+              raw: parsed.raw || String(rawText),
+              capturedAt: new Date().toISOString(),
+            },
+            qrExtras: {
+              grade: parsed.grade || '',
+              railType: parsed.railType || '',
+              spec: parsed.spec || '',
+              lengthM: parsed.lengthM || '',
+            }
+          }
+        });
+        setStatus('Duplicate detected — awaiting decision');
+        return; // do not set pending yet
+      }
     }
+
+    // Normal non-duplicate flow
+    okBeep();
+    setPending({
+      serial: (parsed.serial || rawText),
+      raw: parsed.raw || String(rawText),
+      capturedAt: new Date().toISOString(),
+    });
+    setQrExtras({
+      grade: parsed.grade || '',
+      railType: parsed.railType || '',
+      spec: parsed.spec || '',
+      lengthM: parsed.lengthM || '',
+    });
+    setStatus('Captured — review & Confirm');
+  };
+
+  // When user decides from the duplicate modal
+  const handleDupDiscard = () => {
+    setDupPrompt(null);
+    setPending(null);
+    setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' });
+    setStatus('Ready');
+  };
+  const handleDupContinue = () => {
+    if (!dupPrompt) return;
+    okBeep();
+    setPending(dupPrompt.candidate.pending);
+    setQrExtras(dupPrompt.candidate.qrExtras);
+    setDupPrompt(null);
+    setStatus('Captured — review & Confirm');
   };
 
   // User confirms the pending capture -> POST to backend, add to staged list
@@ -137,13 +194,20 @@ export default function App() {
       alert('Nothing to save yet. Scan a code first.');
       return;
     }
+
+    // Safety: re-check duplicate just before save (in case list changed)
+    const dupNow = findDuplicates(pending.serial);
+    if (dupNow.length > 0 && !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)) {
+      return;
+    }
+
     const rec = {
       serial: pending.serial,
       stage: 'received',
       operator,
       loadId, wagon1, wagon2, wagon3,
       timestamp: new Date().toISOString(),
-      // extras (not necessarily stored by backend yet, but OK to send)
+      // extras (ok to send)
       grade: qrExtras.grade,
       railType: qrExtras.railType,
       spec: qrExtras.spec,
@@ -215,6 +279,54 @@ export default function App() {
 
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
+      {/* ⚠️ Duplicate modal */}
+      {dupPrompt && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)',
+            display: 'grid', placeItems: 'center', zIndex: 50, padding: 16
+          }}
+        >
+          <div
+            className="card"
+            style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)',
+              boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}
+          >
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{
+                width: 40, height: 40, borderRadius: 9999,
+                display: 'grid', placeItems: 'center',
+                background: 'rgba(220, 38, 38, .1)', color: 'rgb(220,38,38)', fontSize: 22
+              }}>⚠️</div>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ margin: 0 }}>QR already scanned</h3>
+                <div className="status" style={{ marginTop: 6 }}>
+                  <strong>{dupPrompt.serial}</strong> appears in your staged list ({dupPrompt.matches.length} match{dupPrompt.matches.length>1?'es':''}).
+                </div>
+                <div className="list" style={{ marginTop: 8, maxHeight: 160, overflow: 'auto' }}>
+                  {dupPrompt.matches.map((m, i) => (
+                    <div className="item" key={m.id || i}>
+                      <div className="serial">{m.serial}</div>
+                      <div className="meta">
+                        {m.stage} • {m.operator} • {new Date(m.timestamp || Date.now()).toLocaleString()}
+                      </div>
+                      {(m.loadId || m.wagon1 || m.wagon2 || m.wagon3) &&
+                        <div className="meta">Load: {m.loadId || '-'} | W1: {m.wagon1 || '-'} | W2: {m.wagon2 || '-'} | W3: {m.wagon3 || '-'}</div>}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                  <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>
+                  <button className="btn" onClick={handleDupContinue}>Continue</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="app-header">
         <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -247,6 +359,12 @@ export default function App() {
               {pending && (
                 <div className="notice" style={{ marginTop: 10 }}>
                   <strong>Pending capture:</strong> {pending.serial}
+                </div>
+              )}
+              {/* Gentle inline warning if this pending is a known duplicate */}
+              {pending?.serial && scanSerialSet.has(String(pending.serial).trim().toUpperCase()) && (
+                <div className="notice" style={{ marginTop: 8, color: 'rgb(220,38,38)' }}>
+                  ⚠️ Warning: this QR matches an already staged serial.
                 </div>
               )}
             </section>
@@ -334,10 +452,9 @@ export default function App() {
       <footer className="footer">
         <div className="footer-inner">
           <span>© {new Date().getFullYear()} Top Notch Solutions</span>
-          <span className="tag">Rail Inventory • v1.4</span>
+          <span className="tag">Rail Inventory • v1.5</span>
         </div>
       </footer>
     </div>
   );
 }
-
