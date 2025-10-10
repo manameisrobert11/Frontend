@@ -1,5 +1,5 @@
 // src/app.jsx
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
 import './app.css';
@@ -11,7 +11,7 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-// ---- QR parsing (same logic you’ve been using) ----
+// ---- QR parsing (same as before) ----
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -62,29 +62,35 @@ export default function App() {
   const [status, setStatus] = useState('Ready');
   const [scans, setScans] = useState([]);
 
-  // operator + batch/wagons (editable controls)
+  // operator + wagon ID (single, assigned per scan)
   const [operator, setOperator] = useState('Clerk A');
-  const [loadId, setLoadId]     = useState('');
-  const [wagon1, setWagon1]     = useState('');
-  const [wagon2, setWagon2]     = useState('');
-  const [wagon3, setWagon3]     = useState('');
+  const [wagonId, setWagonId]   = useState('');
 
-  // NEW: pending capture (user reviews before saving)
+  // pending capture (review before saving)
   const [pending, setPending] = useState(null);
-  // optional parsed extras for UI
   const [qrExtras, setQrExtras] = useState({ grade:'', railType:'', spec:'', lengthM:'' });
 
-  // Beep sound (tiny inline wav so no asset file needed)
+  // Duplicate prompt
+  const [dupPrompt, setDupPrompt] = useState(null);
+  const [removePrompt, setRemovePrompt] = useState(null); // New state for remove confirmation
+
+  // Beeps
   const beepRef = useRef(null);
-  const ensureBeep = () => {
+  const ensureBeep = (hz = 1500, ms = 120) => {
     if (!beepRef.current) {
       const dataUri =
         'data:audio/wav;base64,' +
         'UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
       beepRef.current = new Audio(dataUri);
     }
-    try { beepRef.current.currentTime = 0; beepRef.current.play(); } catch {}
+    try {
+      beepRef.current.playbackRate = Math.max(0.5, Math.min(2, hz / 1500));
+      beepRef.current.currentTime = 0;
+      beepRef.current.play();
+    } catch {}
   };
+  const okBeep = () => ensureBeep(1500, 120);
+  const warnBeep = () => ensureBeep(800, 160);
 
   // Load staged list on mount
   useEffect(() => {
@@ -98,52 +104,126 @@ export default function App() {
     })();
   }, []);
 
-  // Called by Scanner when it reads something.
-  // We DO NOT save yet. We fill the Controls + show a Pending panel.
+  // fast lookup for duplicates
+  const scanSerialSet = useMemo(() => {
+    const s = new Set();
+    for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
+    return s;
+  }, [scans]);
+
+  const findDuplicates = (serial) => {
+    const key = String(serial || '').trim().toUpperCase();
+    if (!key) return [];
+    return scans.filter(r => String(r.serial || '').trim().toUpperCase() === key);
+  };
+
+  // Called by Scanner when it reads something
   const onDetected = (rawText) => {
     const parsed = parseQrPayload(rawText);
-    // set controls defaults from parsed content (user can edit)
-    if (parsed.serial) {
-      // Don’t overwrite loadId/wagons—those are per-batch manual entries.
-      ensureBeep();
-      setPending({
-        serial: parsed.serial || rawText,
-        raw: parsed.raw,
-        capturedAt: new Date().toISOString(),
-      });
-      setQrExtras({
-        grade: parsed.grade || '',
-        railType: parsed.railType || '',
-        spec: parsed.spec || '',
-        lengthM: parsed.lengthM || '',
-      });
-      setStatus('Captured — review & Confirm');
-    } else {
-      // Still show something even if we couldn’t parse nicely
-      ensureBeep();
-      setPending({
-        serial: rawText,
-        raw: rawText,
-        capturedAt: new Date().toISOString(),
-      });
-      setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' });
-      setStatus('Captured — review & Confirm');
+    const serial = parsed.serial || rawText;
+
+    if (serial) {
+      const matches = findDuplicates(serial);
+      if (matches.length > 0) {
+        warnBeep();
+        setDupPrompt({
+          serial: String(serial).toUpperCase(),
+          matches,
+          candidate: {
+            pending: {
+              serial: String(serial).toUpperCase(),
+              raw: parsed.raw || String(rawText),
+              capturedAt: new Date().toISOString(),
+            },
+            qrExtras: {
+              grade: parsed.grade || '',
+              railType: parsed.railType || '',
+              spec: parsed.spec || '',
+              lengthM: parsed.lengthM || '',
+            }
+          }
+        });
+        setStatus('Duplicate detected — awaiting decision');
+        return;
+      }
+    }
+
+    okBeep();
+    setPending({
+      serial: (parsed.serial || rawText),
+      raw: parsed.raw || String(rawText),
+      capturedAt: new Date().toISOString(),
+    });
+    setQrExtras({
+      grade: parsed.grade || '',
+      railType: parsed.railType || '',
+      spec: parsed.spec || '',
+      lengthM: parsed.lengthM || '',
+    });
+    setStatus('Captured — review & Confirm');
+  };
+
+  // Duplicate modal actions
+  const handleDupDiscard = () => {
+    setDupPrompt(null);
+    setPending(null);
+    setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' });
+    setStatus('Ready');
+  };
+  const handleDupContinue = () => {
+    if (!dupPrompt) return;
+    okBeep();
+    setPending(dupPrompt.candidate.pending);
+    setQrExtras(dupPrompt.candidate.qrExtras);
+    setDupPrompt(null);
+    setStatus('Captured — review & Confirm');
+  };
+
+  // Remove scan action (confirmation)
+  const handleRemoveScan = (scanId) => {
+    setRemovePrompt(scanId); // Ask for confirmation
+  };
+
+  const confirmRemoveScan = async () => {
+    if (!removePrompt) return;
+    try {
+      // Call the backend to delete the scan (add server-side delete logic)
+      const resp = await fetch(api(`/remove-scan/${removePrompt}`), { method: 'DELETE' });
+      if (!resp.ok) throw new Error('Failed to remove scan');
+
+      // Update the staged list after removal
+      setScans(prev => prev.filter(scan => scan.id !== removePrompt));
+      setRemovePrompt(null); // Reset confirmation
+      setStatus('Scan removed successfully');
+    } catch (e) {
+      console.error(e);
+      alert(e.message || 'Failed to remove scan');
+      setRemovePrompt(null); // Reset confirmation
     }
   };
 
-  // User confirms the pending capture -> POST to backend, add to staged list
+  const discardRemovePrompt = () => {
+    setRemovePrompt(null); // Discard remove prompt
+  };
+
+  // Confirm save
   const confirmPending = async () => {
     if (!pending?.serial) {
       alert('Nothing to save yet. Scan a code first.');
       return;
     }
+
+    const dupNow = findDuplicates(pending.serial);
+    if (dupNow.length > 0 && !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)) {
+      return;
+    }
+
     const rec = {
       serial: pending.serial,
       stage: 'received',
       operator,
-      loadId, wagon1, wagon2, wagon3,
+      wagonId, // ← single Wagon ID tied to this scan
       timestamp: new Date().toISOString(),
-      // extras (not necessarily stored by backend yet, but OK to send)
       grade: qrExtras.grade,
       railType: qrExtras.railType,
       spec: qrExtras.spec,
@@ -161,17 +241,13 @@ export default function App() {
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data?.error || 'Save failed');
 
-      // update list immediately
       setScans(prev => [
         {
           id: data.id || Date.now(),
           serial: rec.serial,
           stage: rec.stage,
           operator: rec.operator,
-          loadId: rec.loadId,
-          wagon1: rec.wagon1,
-          wagon2: rec.wagon2,
-          wagon3: rec.wagon3,
+          wagonId: rec.wagonId,
           timestamp: rec.timestamp,
           grade: rec.grade,
           railType: rec.railType,
@@ -215,6 +291,28 @@ export default function App() {
 
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
+      {/* Confirmation for removing scan */}
+      {removePrompt && (
+        <div role="dialog" aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}>
+          <div className="card" style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ margin: 0 }}>Are you sure?</h3>
+                <div className="status" style={{ marginTop: 6 }}>
+                  Are you sure you want to remove this staged scan from the list?
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                  <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
+                  <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="app-header">
         <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -242,7 +340,6 @@ export default function App() {
           <div className="grid" style={{ marginTop: 20 }}>
             <section className="card">
               <h3>Scanner</h3>
-              {/* Your Scanner component has its own Start/Stop button inside */}
               <Scanner onDetected={onDetected} />
               {pending && (
                 <div className="notice" style={{ marginTop: 10 }}>
@@ -259,21 +356,13 @@ export default function App() {
                   <input className="input" value={operator} onChange={e => setOperator(e.target.value)} />
                 </div>
                 <div>
-                  <label className="status">Load ID</label>
-                  <input className="input" value={loadId} onChange={e => setLoadId(e.target.value)} placeholder="e.g. L-2025-09-001" />
-                </div>
-
-                <div>
-                  <label className="status">Wagon 1 (Serial)</label>
-                  <input className="input" value={wagon1} onChange={e => setWagon1(e.target.value)} placeholder="e.g. NPS-00123" />
-                </div>
-                <div>
-                  <label className="status">Wagon 2 (Serial)</label>
-                  <input className="input" value={wagon2} onChange={e => setWagon2(e.target.value)} placeholder="e.g. NPS-00456" />
-                </div>
-                <div>
-                  <label className="status">Wagon 3 (Serial)</label>
-                  <input className="input" value={wagon3} onChange={e => setWagon3(e.target.value)} placeholder="e.g. NPS-00789" />
+                  <label className="status">Wagon ID</label>
+                  <input
+                    className="input"
+                    value={wagonId}
+                    onChange={e => setWagonId(e.target.value)}
+                    placeholder="e.g. WGN-0123"
+                  />
                 </div>
 
                 {/* Read-only preview of parsed extras */}
@@ -320,9 +409,13 @@ export default function App() {
                     <div className="meta">
                       {s.stage} • {s.operator} • {new Date(s.timestamp || Date.now()).toLocaleString()}
                     </div>
-                    {(s.loadId || s.wagon1 || s.wagon2 || s.wagon3) && (
-                      <div className="meta">Load: {s.loadId || '-'} | W1: {s.wagon1 || '-'} | W2: {s.wagon2 || '-'} | W3: {s.wagon3 || '-'}</div>
-                    )}
+                    {!!s.wagonId && <div className="meta">Wagon: {s.wagonId}</div>}
+                    <button
+                      className="btn btn-outline"
+                      onClick={() => handleRemoveScan(s.id)}
+                    >
+                      Remove
+                    </button>
                   </div>
                 ))}
               </div>
@@ -333,8 +426,8 @@ export default function App() {
 
       <footer className="footer">
         <div className="footer-inner">
-          <span>© {new Date().getFullYear()} Top Notch Solutions</span>
-          <span className="tag">Rail Inventory • v1.4</span>
+          <span>© {new Date().getFullYear()} Premium Star Graphics</span>
+          <span className="tag">Rail Inventory • v1.7</span>
         </div>
       </footer>
     </div>
