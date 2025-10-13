@@ -1,13 +1,8 @@
-Here’s the complete `src/App.jsx` with the improved QR parser (pulls **railType**, **spec**, **lengthM** from the QR; no duplicate grade), saving with legacy wagon keys (`wagon1Id/2Id/3Id`), **Export to Excel** button beside **Confirm & Save / Discard**, and the StartPage flow using `onContinue`.
-
-```jsx
-// src/App.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
 import './app.css';
 
-// ---- API helper ----
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const api = (p) => {
   const path = p.startsWith('/') ? p : `/${p}`;
@@ -17,29 +12,25 @@ const api = (p) => {
 // ---- QR parsing (length/spec/railType; no grade duplication) ----
 function parseQrPayload(raw) {
   const clean = String(raw || '')
-    .replace(/[^\x20-\x7E]/g, ' ') // strip control chars
+    .replace(/[^\x20-\x7E]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
-  // keep hyphens inside tokens (e.g., 2DX059-25)
   const tokens = clean.split(/[ \t\r\n|,:/]+/).filter(Boolean);
 
-  // Prefer long alphanumeric for serial (e.g., A25405053104AA)
   const serial =
-    tokens.find(t => /^[A-Z0-9]{12,}$/.test(t)) ||
-    tokens.find(t => /^[A-Z0-9]{8,}$/.test(t)) || '';
+    tokens.find((t) => /^[A-Z0-9]{12,}$/.test(t)) ||
+    tokens.find((t) => /^[A-Z0-9]{8,}$/.test(t)) ||
+    '';
 
-  // Grade like SAR51 / SARxx
-  let grade = (tokens.find(t => /^SAR\d{2}$/i.test(t)) || '').toUpperCase();
+  let grade = (tokens.find((t) => /^SAR\d{2}$/i.test(t)) || '').toUpperCase();
 
-  // Rail type: R260 / R350 / R350HT / R350LHT etc.
   let railType = '';
   for (const t of tokens) {
     const u = t.toUpperCase();
     if (/^R\d{3}(?:L?HT)?$/.test(u)) { railType = u; break; }
   }
 
-  // Spec: ATX/ATA/AREMA/UIC/EN/GB optionally followed by code (e.g., "ATA 2DX059-25")
   let spec = '';
   for (let i = 0; i < tokens.length; i++) {
     const u = tokens[i].toUpperCase();
@@ -51,10 +42,9 @@ function parseQrPayload(raw) {
     }
   }
 
-  // Length: 24m / 18m / 12.5m etc.
-  const lengthM = tokens.find(t => /^\d{1,3}(\.\d+)?m$/i.test(t)) || '';
+  const lengthM = tokens.find((t) => /^\d{1,3}(\.\d+)?m$/i.test(t)) || '';
 
-  if (grade && railType && grade === railType) grade = ''; // safety
+  if (grade && railType && grade === railType) grade = '';
 
   return { raw: clean, serial, grade, railType, spec, lengthM };
 }
@@ -62,27 +52,21 @@ function parseQrPayload(raw) {
 export default function App() {
   const [status, setStatus] = useState('Ready');
   const [scans, setScans] = useState([]);
-
-  // Start page first (white background)
   const [showStart, setShowStart] = useState(true);
 
-  // Controls
   const [operator, setOperator] = useState('Clerk A');
   const [wagonId1, setWagonId1] = useState('');
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
-  const [receivedAt, setReceivedAt] = useState(''); // plain text
-  const [loadedAt, setLoadedAt] = useState('');     // plain text
+  const [receivedAt, setReceivedAt] = useState('');
+  const [loadedAt, setLoadedAt] = useState('');
 
-  // Pending capture + parsed extras
   const [pending, setPending] = useState(null);
-  const [qrExtras, setQrExtras] = useState({ grade:'', railType:'', spec:'', lengthM:'' });
+  const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
 
-  // Duplicate & Remove prompts
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // Beeps
   const beepRef = useRef(null);
   const ensureBeep = (hz = 1500) => {
     if (!beepRef.current) {
@@ -98,7 +82,6 @@ export default function App() {
   const okBeep = () => ensureBeep(1500);
   const warnBeep = () => ensureBeep(800);
 
-  // Load staged on mount (normalize wagonId keys from legacy backend)
   useEffect(() => {
     (async () => {
       try {
@@ -113,11 +96,12 @@ export default function App() {
           }));
           setScans(normalized);
         }
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.error(e);
+      }
     })();
   }, []);
 
-  // Duplicates
   const scanSerialSet = useMemo(() => {
     const s = new Set();
     for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
@@ -127,10 +111,9 @@ export default function App() {
   const findDuplicates = (serial) => {
     const key = String(serial || '').trim().toUpperCase();
     if (!key) return [];
-    return scans.filter(r => String(r.serial || '').trim().toUpperCase() === key);
+    return scans.filter((r) => String(r.serial || '').trim().toUpperCase() === key);
   };
 
-  // Scanner callback
   const onDetected = (rawText) => {
     const parsed = parseQrPayload(rawText);
     const serial = parsed.serial || rawText;
@@ -153,8 +136,8 @@ export default function App() {
               railType: parsed.railType || '',
               spec: parsed.spec || '',
               lengthM: parsed.lengthM || '',
-            }
-          }
+            },
+          },
         });
         setStatus('Duplicate detected — awaiting decision');
         return;
@@ -163,7 +146,7 @@ export default function App() {
 
     okBeep();
     setPending({
-      serial: (parsed.serial || rawText),
+      serial: parsed.serial || rawText,
       raw: parsed.raw || String(rawText),
       capturedAt: new Date().toISOString(),
     });
@@ -176,11 +159,10 @@ export default function App() {
     setStatus('Captured — review & Confirm');
   };
 
-  // Duplicate modal actions
   const handleDupDiscard = () => {
     setDupPrompt(null);
     setPending(null);
-    setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' });
+    setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
     setStatus('Ready');
   };
   const handleDupContinue = () => {
@@ -192,7 +174,6 @@ export default function App() {
     setStatus('Captured — review & Confirm');
   };
 
-  // Remove staged scan (legacy route)
   const handleRemoveScan = (scanId) => setRemovePrompt(scanId);
   const confirmRemoveScan = async () => {
     if (!removePrompt) return;
@@ -202,7 +183,7 @@ export default function App() {
         const errText = await resp.text().catch(() => '');
         throw new Error(errText || 'Failed to remove scan');
       }
-      setScans(prev => prev.filter(scan => scan.id !== removePrompt));
+      setScans((prev) => prev.filter((scan) => scan.id !== removePrompt));
       setRemovePrompt(null);
       setStatus('Scan removed successfully');
     } catch (e) {
@@ -213,15 +194,16 @@ export default function App() {
   };
   const discardRemovePrompt = () => setRemovePrompt(null);
 
-  // Confirm & Save (legacy save route, uses wagon1Id/2Id/3Id)
   const confirmPending = async () => {
     if (!pending?.serial || !String(pending.serial).trim()) {
       alert('Nothing to save yet. Scan a code first.');
       return;
     }
     const dupNow = findDuplicates(pending.serial);
-    if (dupNow.length > 0 &&
-        !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)) {
+    if (
+      dupNow.length > 0 &&
+      !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)
+    ) {
       return;
     }
 
@@ -229,11 +211,11 @@ export default function App() {
       serial: String(pending.serial).trim(),
       stage: 'received',
       operator,
-      wagon1Id: wagonId1,   // match backend/DB
+      wagon1Id: wagonId1,
       wagon2Id: wagonId2,
       wagon3Id: wagonId3,
-      receivedAt,           // plain text
-      loadedAt,             // plain text
+      receivedAt,
+      loadedAt,
       timestamp: new Date().toISOString(),
       grade: qrExtras.grade,
       railType: qrExtras.railType,
@@ -257,17 +239,19 @@ export default function App() {
       }
 
       const newId = data?.id || Date.now();
-      setScans(prev => [{
-        id: newId,
-        ...rec,
-        // normalize for UI list
-        wagonId1: rec.wagon1Id,
-        wagonId2: rec.wagon2Id,
-        wagonId3: rec.wagon3Id,
-      }, ...prev]);
+      setScans((prev) => [
+        {
+          id: newId,
+          ...rec,
+          wagonId1: rec.wagon1Id,
+          wagonId2: rec.wagon2Id,
+          wagonId3: rec.wagon3Id,
+        },
+        ...prev,
+      ]);
 
       setPending(null);
-      setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' });
+      setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
     } catch (e) {
       console.error('Save failed:', e);
@@ -276,7 +260,6 @@ export default function App() {
     }
   };
 
-  // Export to Excel
   const exportToExcel = async () => {
     try {
       const resp = await fetch(api('/export-to-excel'), { method: 'POST' });
@@ -305,15 +288,12 @@ export default function App() {
     }
   };
 
-  // ---------- RENDER ----------
-
-  // 1) START PAGE (your component, white background)
   if (showStart) {
     return (
-      <div style={{ minHeight:'100vh', background:'#fff' }}>
+      <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
-            onContinue={() => setShowStart(false)}  // Start Scanning
+            onContinue={() => setShowStart(false)}
             onExport={exportToExcel}
             operator={operator}
             setOperator={setOperator}
@@ -323,7 +303,6 @@ export default function App() {
     );
   }
 
-  // 2) SCANNING APP
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
       <header className="app-header">
@@ -340,7 +319,6 @@ export default function App() {
       </header>
 
       <div className="grid" style={{ marginTop: 20 }}>
-        {/* Scanner */}
         <section className="card">
           <h3>Scanner</h3>
           <Scanner onDetected={onDetected} />
@@ -352,40 +330,36 @@ export default function App() {
           )}
         </section>
 
-        {/* Controls */}
         <section className="card">
           <h3>Controls</h3>
           <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             <div>
               <label className="status">Operator</label>
-              <input className="input" value={operator} onChange={e => setOperator(e.target.value)} />
+              <input className="input" value={operator} onChange={(e) => setOperator(e.target.value)} />
             </div>
 
-            {/* Three "Wagon ID" fields */}
             <div>
               <label className="status">Wagon ID</label>
-              <input className="input" value={wagonId1} onChange={e => setWagonId1(e.target.value)} placeholder="e.g. WGN-0123" />
+              <input className="input" value={wagonId1} onChange={(e) => setWagonId1(e.target.value)} placeholder="e.g. WGN-0123" />
             </div>
             <div>
               <label className="status">Wagon ID</label>
-              <input className="input" value={wagonId2} onChange={e => setWagonId2(e.target.value)} placeholder="e.g. WGN-0456" />
+              <input className="input" value={wagonId2} onChange={(e) => setWagonId2(e.target.value)} placeholder="e.g. WGN-0456" />
             </div>
             <div>
               <label className="status">Wagon ID</label>
-              <input className="input" value={wagonId3} onChange={e => setWagonId3(e.target.value)} placeholder="e.g. WGN-0789" />
+              <input className="input" value={wagonId3} onChange={(e) => setWagonId3(e.target.value)} placeholder="e.g. WGN-0789" />
             </div>
 
-            {/* Timing fields as plain text */}
             <div>
               <label className="status">Recieved at</label>
-              <input className="input" value={receivedAt} onChange={e => setReceivedAt(e.target.value)} placeholder="" />
+              <input className="input" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} placeholder="" />
             </div>
             <div>
               <label className="status">Loaded at</label>
-              <input className="input" value={loadedAt} onChange={e => setLoadedAt(e.target.value)} placeholder="" />
+              <input className="input" value={loadedAt} onChange={(e) => setLoadedAt(e.target.value)} placeholder="" />
             </div>
 
-            {/* Read-only parsed extras */}
             <div>
               <label className="status">Grade</label>
               <input className="input" value={qrExtras.grade} readOnly />
@@ -404,12 +378,11 @@ export default function App() {
             </div>
           </div>
 
-          {/* Actions row — includes Export to Excel */}
           <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
             <button
               className="btn btn-outline"
-              onClick={() => { setPending(null); setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' }); setStatus('Ready'); }}
+              onClick={() => { setPending(null); setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' }); setStatus('Ready'); }}
             >
               Discard
             </button>
@@ -417,7 +390,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* Staged Scans */}
         <section className="card">
           <h3>Staged Scans</h3>
           <div className="list">
@@ -458,17 +430,19 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Remove confirmation */}
       {removePrompt && (
-        <div role="dialog" aria-modal="true"
-          style={{ position:'fixed', inset:0, background:'rgba(2,6,23,.55)', display:'grid', placeItems:'center', zIndex:50, padding:16 }}>
-          <div className="card" style={{ maxWidth:520, width:'100%', border:'1px solid var(--border)', boxShadow:'0 20px 60px rgba(2,6,23,.35)' }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:40, height:40, borderRadius:9999, display:'grid', placeItems:'center', background:'rgba(220,38,38,.1)', color:'rgb(220,38,38)', fontSize:22 }}>⚠️</div>
-              <div style={{ flex:1 }}>
-                <h3 style={{ margin:0 }}>Are you sure?</h3>
-                <div className="status" style={{ marginTop:6 }}>Are you sure you want to remove this staged scan from the list?</div>
-                <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:12 }}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
+        >
+          <div className="card" style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ margin: 0 }}>Are you sure?</h3>
+                <div className="status" style={{ marginTop: 6 }}>Are you sure you want to remove this staged scan from the list?</div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
                   <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
                 </div>
@@ -478,19 +452,21 @@ export default function App() {
         </div>
       )}
 
-      {/* Duplicate modal */}
       {dupPrompt && (
-        <div role="dialog" aria-modal="true"
-          style={{ position:'fixed', inset:0, background:'rgba(2,6,23,.55)', display:'grid', placeItems:'center', zIndex:50, padding:16 }}>
-          <div className="card" style={{ maxWidth:560, width:'100%', border:'1px solid var(--border)', boxShadow:'0 20px 60px rgba(2,6,23,.35)' }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:40, height:40, borderRadius:9999, display:'grid', placeItems:'center', background:'rgba(251,191,36,.15)', color:'rgb(202,138,4)', fontSize:22 }}>⚠️</div>
-              <div style={{ flex:1 }}>
-                <h3 style={{ margin:0 }}>Duplicate detected</h3>
-                <div className="status" style={{ marginTop:6 }}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
+        >
+          <div className="card" style={{ maxWidth: 560, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(251,191,36,.15)', color: 'rgb(202,138,4)', fontSize: 22 }}>⚠️</div>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ margin: 0 }}>Duplicate detected</h3>
+                <div className="status" style={{ marginTop: 6 }}>
                   The serial <strong>{dupPrompt.serial}</strong> already exists in the staged list ({dupPrompt.matches.length}).
                 </div>
-                <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:12 }}>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>
                   <button className="btn" onClick={handleDupContinue}>Continue anyway</button>
                 </div>
@@ -502,4 +478,3 @@ export default function App() {
     </div>
   );
 }
-```
