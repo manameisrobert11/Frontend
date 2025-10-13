@@ -192,22 +192,21 @@ export default function App() {
         !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)) {
       return;
     }
-
-    const rec = {
-      serial: String(pending.serial).trim(),
-      stage: 'received',
-      operator,
-      wagonId1,
-      wagonId2,
-      wagonId3,
-      receivedAt,   // plain text
-      loadedAt,     // plain text
-      timestamp: new Date().toISOString(),
-      grade: qrExtras.grade,
-      railType: qrExtras.railType,
-      spec: qrExtras.spec,
-      lengthM: qrExtras.lengthM,
-    };
+  const rec = {
+    serial: String(pending.serial).trim(),
+    stage: 'received',
+    operator,
+    wagon1Id: wagonId1,   // <- use legacy keys to match backend/DB
+    wagon2Id: wagonId2,
+    wagon3Id: wagonId3,
+    receivedAt,           // plain text
+   loadedAt,             // plain text
+    timestamp: new Date().toISOString(),
+   grade: qrExtras.grade,
+    railType: qrExtras.railType,
+    spec: qrExtras.spec,
+    lengthM: qrExtras.lengthM,
+ };
 
     try {
       const resp = await fetch(api('/scan'), {
@@ -465,3 +464,4 @@ export default function App() {
     </div>
   );
 }
+
