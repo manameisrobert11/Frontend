@@ -1,3 +1,6 @@
+Here’s the complete `src/App.jsx` with the improved QR parser (pulls **railType**, **spec**, **lengthM** from the QR; no duplicate grade), saving with legacy wagon keys (`wagon1Id/2Id/3Id`), **Export to Excel** button beside **Confirm & Save / Discard**, and the StartPage flow using `onContinue`.
+
+```jsx
 // src/App.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import Scanner from './scanner/Scanner.jsx';
@@ -11,19 +14,48 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-// ---- QR parsing ----
+// ---- QR parsing (length/spec/railType; no grade duplication) ----
 function parseQrPayload(raw) {
   const clean = String(raw || '')
-    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/[^\x20-\x7E]/g, ' ') // strip control chars
     .replace(/\s+/g, ' ')
     .trim();
 
-  const tokens = clean.split(/[ ,;|:/\t\r\n]+/).filter(Boolean);
-  const serial   = tokens.find(t => /^[A-Z0-9]{8,}$/.test(t));
-  const grade    = tokens.find(t => /^SAR\d{2}$/i.test(t)) || '';
-  const railType = (tokens.find(t => /^R(260|350(L?HT)?)$/i) || '').toUpperCase();
-  const spec     = tokens.find(t => /^(ATX|AREMA|UIC|EN|GB)/i) || '';
-  const lengthM  = tokens.find(t => /^\d+(\.\d+)?m$/i) || '';
+  // keep hyphens inside tokens (e.g., 2DX059-25)
+  const tokens = clean.split(/[ \t\r\n|,:/]+/).filter(Boolean);
+
+  // Prefer long alphanumeric for serial (e.g., A25405053104AA)
+  const serial =
+    tokens.find(t => /^[A-Z0-9]{12,}$/.test(t)) ||
+    tokens.find(t => /^[A-Z0-9]{8,}$/.test(t)) || '';
+
+  // Grade like SAR51 / SARxx
+  let grade = (tokens.find(t => /^SAR\d{2}$/i.test(t)) || '').toUpperCase();
+
+  // Rail type: R260 / R350 / R350HT / R350LHT etc.
+  let railType = '';
+  for (const t of tokens) {
+    const u = t.toUpperCase();
+    if (/^R\d{3}(?:L?HT)?$/.test(u)) { railType = u; break; }
+  }
+
+  // Spec: ATX/ATA/AREMA/UIC/EN/GB optionally followed by code (e.g., "ATA 2DX059-25")
+  let spec = '';
+  for (let i = 0; i < tokens.length; i++) {
+    const u = tokens[i].toUpperCase();
+    if (/^(ATX|ATA|AREMA|UIC|EN\d*|GB\d*)$/.test(u)) {
+      const next = tokens[i + 1] || '';
+      if (/^[A-Z0-9-]{3,}$/i.test(next)) spec = `${tokens[i]} ${next}`;
+      else spec = tokens[i];
+      break;
+    }
+  }
+
+  // Length: 24m / 18m / 12.5m etc.
+  const lengthM = tokens.find(t => /^\d{1,3}(\.\d+)?m$/i.test(t)) || '';
+
+  if (grade && railType && grade === railType) grade = ''; // safety
+
   return { raw: clean, serial, grade, railType, spec, lengthM };
 }
 
@@ -31,7 +63,7 @@ export default function App() {
   const [status, setStatus] = useState('Ready');
   const [scans, setScans] = useState([]);
 
-  // Show StartPage first (white background)
+  // Start page first (white background)
   const [showStart, setShowStart] = useState(true);
 
   // Controls
@@ -181,7 +213,7 @@ export default function App() {
   };
   const discardRemovePrompt = () => setRemovePrompt(null);
 
-  // Confirm & Save (legacy save route)
+  // Confirm & Save (legacy save route, uses wagon1Id/2Id/3Id)
   const confirmPending = async () => {
     if (!pending?.serial || !String(pending.serial).trim()) {
       alert('Nothing to save yet. Scan a code first.');
@@ -192,21 +224,22 @@ export default function App() {
         !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)) {
       return;
     }
-  const rec = {
-    serial: String(pending.serial).trim(),
-    stage: 'received',
-    operator,
-    wagon1Id: wagonId1,   // <- use legacy keys to match backend/DB
-    wagon2Id: wagonId2,
-    wagon3Id: wagonId3,
-    receivedAt,           // plain text
-   loadedAt,             // plain text
-    timestamp: new Date().toISOString(),
-   grade: qrExtras.grade,
-    railType: qrExtras.railType,
-    spec: qrExtras.spec,
-    lengthM: qrExtras.lengthM,
- };
+
+    const rec = {
+      serial: String(pending.serial).trim(),
+      stage: 'received',
+      operator,
+      wagon1Id: wagonId1,   // match backend/DB
+      wagon2Id: wagonId2,
+      wagon3Id: wagonId3,
+      receivedAt,           // plain text
+      loadedAt,             // plain text
+      timestamp: new Date().toISOString(),
+      grade: qrExtras.grade,
+      railType: qrExtras.railType,
+      spec: qrExtras.spec,
+      lengthM: qrExtras.lengthM,
+    };
 
     try {
       const resp = await fetch(api('/scan'), {
@@ -224,7 +257,14 @@ export default function App() {
       }
 
       const newId = data?.id || Date.now();
-      setScans(prev => [{ id: newId, ...rec }, ...prev]);
+      setScans(prev => [{
+        id: newId,
+        ...rec,
+        // normalize for UI list
+        wagonId1: rec.wagon1Id,
+        wagonId2: rec.wagon2Id,
+        wagonId3: rec.wagon3Id,
+      }, ...prev]);
 
       setPending(null);
       setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' });
@@ -236,7 +276,7 @@ export default function App() {
     }
   };
 
-  // Export to Excel (also used on StartPage via onExport)
+  // Export to Excel
   const exportToExcel = async () => {
     try {
       const resp = await fetch(api('/export-to-excel'), { method: 'POST' });
@@ -273,7 +313,7 @@ export default function App() {
       <div style={{ minHeight:'100vh', background:'#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
-            onContinue={() => setShowStart(false)}
+            onContinue={() => setShowStart(false)}  // Start Scanning
             onExport={exportToExcel}
             operator={operator}
             setOperator={setOperator}
@@ -364,7 +404,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Actions row — now includes Export to Excel */}
+          {/* Actions row — includes Export to Excel */}
           <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
             <button
@@ -373,9 +413,7 @@ export default function App() {
             >
               Discard
             </button>
-            <button className="btn" onClick={exportToExcel}>
-              Export to Excel
-            </button>
+            <button className="btn" onClick={exportToExcel}>Export to Excel</button>
           </div>
         </section>
 
@@ -416,7 +454,7 @@ export default function App() {
       <footer className="footer">
         <div className="footer-inner">
           <span>© {new Date().getFullYear()} Premium Star Graphics</span>
-          <span className="tag">Rail Inventory • v2.1</span>
+          <span className="tag">Rail Inventory • v2.2</span>
         </div>
       </footer>
 
@@ -464,4 +502,4 @@ export default function App() {
     </div>
   );
 }
-
+```
