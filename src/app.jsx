@@ -1,4 +1,3 @@
-// src/App.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
@@ -19,13 +18,11 @@ function parseQrPayload(raw) {
     .trim();
 
   const tokens = clean.split(/[ ,;|:/\t\r\n]+/).filter(Boolean);
-
   const serial   = tokens.find(t => /^[A-Z0-9]{8,}$/.test(t));
   const grade    = tokens.find(t => /^SAR\d{2}$/i.test(t)) || '';
   const railType = (tokens.find(t => /^R(260|350(L?HT)?)$/i) || '').toUpperCase();
   const spec     = tokens.find(t => /^(ATX|AREMA|UIC|EN|GB)/i) || '';
   const lengthM  = tokens.find(t => /^\d+(\.\d+)?m$/i) || '';
-
   return { raw: clean, serial, grade, railType, spec, lengthM };
 }
 
@@ -33,7 +30,7 @@ export default function App() {
   const [status, setStatus] = useState('Ready');
   const [scans, setScans] = useState([]);
 
-  // Start page first (classic flow)
+  // StartPage first, white background
   const [showStart, setShowStart] = useState(true);
 
   // Controls
@@ -41,8 +38,8 @@ export default function App() {
   const [wagonId1, setWagonId1] = useState('');
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
-  const [receivedAt, setReceivedAt] = useState(''); // plain text
-  const [loadedAt, setLoadedAt] = useState('');     // plain text
+  const [receivedAt, setReceivedAt] = useState(''); // plain text inputs
+  const [loadedAt, setLoadedAt]   = useState('');
 
   // Pending capture + parsed extras
   const [pending, setPending] = useState(null);
@@ -87,7 +84,7 @@ export default function App() {
     })();
   }, []);
 
-  // Duplicate helpers
+  // Dups
   const scanSerialSet = useMemo(() => {
     const s = new Set();
     for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
@@ -239,7 +236,7 @@ export default function App() {
     }
   };
 
-  // Export to Excel (downloads the .xlsm from backend)
+  // Export to Excel
   const exportToExcel = async () => {
     try {
       const resp = await fetch(api('/export-to-excel'), { method: 'POST' });
@@ -247,7 +244,6 @@ export default function App() {
         const text = await resp.text().catch(() => '');
         throw new Error(text || `HTTP ${resp.status}`);
       }
-      // derive filename from Content-Disposition header or fallback
       const dispo = resp.headers.get('Content-Disposition') || '';
       const match = dispo.match(/filename="?([^"]+)"?/i);
       const filename = match?.[1] || `Master_${Date.now()}.xlsm`;
@@ -271,20 +267,11 @@ export default function App() {
 
   // ---------- RENDER ----------
 
-  // 1) START PAGE (classic page, blue background, no overlay; Start Scanning triggers onContinue)
+  // 1) START PAGE (white background, Start Scanning does the navigation)
   if (showStart) {
     return (
-      <div style={{
-        minHeight:'100vh',
-        background:'#0b5ed7', // blue background as requested
-        display:'grid',
-        placeItems:'center',
-        padding:20
-      }}>
-        <div style={{ width:'min(980px, 94vw)' }}>
-          {/* StartPage should call props.onContinue() when the user clicks "Start Scanning" */}
-          <StartPage onContinue={() => setShowStart(false)} />
-        </div>
+      <div style={{ minHeight:'100vh', background:'#fff', color:'inherit' }}>
+        <StartPage onContinue={() => setShowStart(false)} />
       </div>
     );
   }
@@ -348,21 +335,11 @@ export default function App() {
             {/* Timing fields as plain text */}
             <div>
               <label className="status">Recieved at</label>
-              <input
-                className="input"
-                value={receivedAt}
-                onChange={e => setReceivedAt(e.target.value)}
-                placeholder=""
-              />
+              <input className="input" value={receivedAt} onChange={e => setReceivedAt(e.target.value)} placeholder="" />
             </div>
             <div>
               <label className="status">Loaded at</label>
-              <input
-                className="input"
-                value={loadedAt}
-                onChange={e => setLoadedAt(e.target.value)}
-                placeholder=""
-              />
+              <input className="input" value={loadedAt} onChange={e => setLoadedAt(e.target.value)} placeholder="" />
             </div>
 
             {/* Read-only parsed extras */}
