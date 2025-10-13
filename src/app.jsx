@@ -33,7 +33,7 @@ export default function App() {
   const [status, setStatus] = useState('Ready');
   const [scans, setScans] = useState([]);
 
-  // Start page overlay (prevents collision)
+  // Start page first (classic flow)
   const [showStart, setShowStart] = useState(true);
 
   // Controls
@@ -239,27 +239,57 @@ export default function App() {
     }
   };
 
+  // Export to Excel (downloads the .xlsm from backend)
+  const exportToExcel = async () => {
+    try {
+      const resp = await fetch(api('/export-to-excel'), { method: 'POST' });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      // derive filename from Content-Disposition header or fallback
+      const dispo = resp.headers.get('Content-Disposition') || '';
+      const match = dispo.match(/filename="?([^"]+)"?/i);
+      const filename = match?.[1] || `Master_${Date.now()}.xlsm`;
+
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setStatus(`Exported ${filename}`);
+    } catch (e) {
+      console.error('Export failed:', e);
+      alert(`Export failed: ${e.message}\n(Ensure uploads/template.xlsm exists on the server)`);
+      setStatus('Export failed');
+    }
+  };
+
   // ---------- RENDER ----------
-  // StartPage overlay (prevents collision)
+
+  // 1) START PAGE (classic page, blue background, no overlay; Start Scanning triggers onContinue)
   if (showStart) {
     return (
-      <div className="start-overlay" style={{
-        position:'fixed', inset:0, background:'var(--bg, #0b1220)', color:'var(--fg, #e5e7eb)',
-        display:'grid', placeItems:'center', padding:20, zIndex:999
+      <div style={{
+        minHeight:'100vh',
+        background:'#0b5ed7', // blue background as requested
+        display:'grid',
+        placeItems:'center',
+        padding:20
       }}>
-        <div style={{width:'min(900px, 92vw)'}}>
-          <div className="card" style={{padding:20, marginBottom:16}}>
-            <StartPage onContinue={() => setShowStart(false)} />
-          </div>
-          <div style={{display:'flex', justifyContent:'flex-end'}}>
-            <button className="btn" onClick={() => setShowStart(false)}>Enter Scanning</button>
-          </div>
+        <div style={{ width:'min(980px, 94vw)' }}>
+          {/* StartPage should call props.onContinue() when the user clicks "Start Scanning" */}
+          <StartPage onContinue={() => setShowStart(false)} />
         </div>
       </div>
     );
   }
 
-  // Scanning app
+  // 2) SCANNING APP
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
       <header className="app-header">
@@ -271,7 +301,11 @@ export default function App() {
               <div className="status">{status}</div>
             </div>
           </div>
-          <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
+
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
+            <button className="btn" onClick={exportToExcel}>Export to Excel</button>
+          </div>
         </div>
       </header>
 
@@ -398,7 +432,7 @@ export default function App() {
       <footer className="footer">
         <div className="footer-inner">
           <span>© {new Date().getFullYear()} Premium Star Graphics</span>
-          <span className="tag">Rail Inventory • v1.8 (legacy routes)</span>
+          <span className="tag">Rail Inventory • v1.9</span>
         </div>
       </footer>
 
