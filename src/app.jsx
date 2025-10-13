@@ -5,11 +5,10 @@ import StartPage from "./StartPage.jsx";
 import { io } from "socket.io-client";
 import "./app.css";
 
-// ---- API helper ----
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const api = (p) => (p.startsWith("/") ? `${API_BASE}${p}` : `${API_BASE}/${p}`);
 
-// ---- QR parsing helper ----
+// --- QR Parsing Helper ---
 function parseQrPayload(raw) {
   const clean = String(raw || "")
     .replace(/[^\x20-\x7E]/g, " ")
@@ -24,66 +23,49 @@ function parseQrPayload(raw) {
   let spec = "";
   let lengthM = "";
 
-  const lenTok = tokens.find((t) => /^[0-9]{1,3}m$/i.test(t));
-  if (lenTok) lengthM = lenTok.replace(/m/i, "");
+  try {
+    const lenTok = tokens.find((t) => /^[0-9]{1,3}m$/i.test(t));
+    if (lenTok) lengthM = lenTok.replace(/m/i, "");
 
-  const gTok = tokens.find((t) => /^SAR\d{2}$/i.test(t));
-  if (gTok) grade = gTok.toUpperCase();
+    const gTok = tokens.find((t) => /^SAR\d{2}$/i.test(t));
+    if (gTok) grade = gTok.toUpperCase();
 
-  const tTok = tokens.find((t) => /^R\d{3}[A-Z]*$/i.test(t));
-  if (tTok) railType = tTok.toUpperCase();
+    const tTok = tokens.find((t) => /^R\d{3}[A-Z]*$/i.test(t));
+    if (tTok) railType = tTok.toUpperCase();
 
-  const sTok = tokens.find(
-    (t) => /^[A-Z0-9-]{10,22}$/i.test(t) && /[A-Z]/i.test(t) && /\d/.test(t)
-  );
-  if (sTok) serial = sTok.toUpperCase();
+    const sTok = tokens.find((t) => /^[A-Z0-9-]{8,22}$/i.test(t) && /[A-Z]/i.test(t) && /\d/.test(t));
+    if (sTok) serial = sTok.toUpperCase();
 
-  for (let i = 0; i < tokens.length - 1; i++) {
-    const pair = `${tokens[i]} ${tokens[i + 1]}`.trim();
-    if (/^[A-Z]{2,4}\s+[0-9A-Z/.\-]{3,}$/.test(pair)) {
-      spec = pair.toUpperCase();
-      break;
+    for (let i = 0; i < tokens.length - 1; i++) {
+      const pair = `${tokens[i]} ${tokens[i + 1]}`.trim();
+      if (/^[A-Z]{2,4}\s+[0-9A-Z/.\-]{3,}$/.test(pair)) {
+        spec = pair.toUpperCase();
+        break;
+      }
     }
-  }
-
-  if (!spec) {
-    const one = tokens.find(
-      (t) =>
-        /^AT[A-Z0-9\-/.]{2,}$/.test(t) || /^[A-Z]{2,4}[A-Z0-9/.\-]{3,}$/.test(t)
-    );
-    if (one) spec = one.toUpperCase();
-  }
-
-  if (!serial) {
-    const cand = tokens
-      .filter((x) => /^[A-Z0-9-]{8,32}$/i.test(x))
-      .sort((a, b) => b.length - a.length)[0];
-    if (cand) serial = cand.toUpperCase();
+  } catch (err) {
+    console.warn("QR parsing failed:", err);
   }
 
   return { grade, railType, serial, spec, lengthM, raw: clean };
 }
 
+// --- React App ---
 export default function App() {
   const [view, setView] = useState("home");
   const [status, setStatus] = useState("Ready");
   const [scans, setScans] = useState([]);
-
-  // Operator + 3 Wagon IDs
   const [operator, setOperator] = useState("Clerk A");
   const [wagon1Id, setWagon1Id] = useState("");
   const [wagon2Id, setWagon2Id] = useState("");
   const [wagon3Id, setWagon3Id] = useState("");
-
-  // Pending capture (review before saving)
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: "", railType: "", spec: "", lengthM: "" });
-
-  // Remove confirmation
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // Beep sound
   const beepRef = useRef(null);
+  const socketRef = useRef(null);
+
   const ensureBeep = () => {
     if (!beepRef.current) {
       const dataUri =
@@ -96,19 +78,17 @@ export default function App() {
     } catch {}
   };
 
-  const socketRef = useRef(null);
-
-  // Load staged list and setup Socket.IO
+  // --- Socket.IO setup ---
   useEffect(() => {
-    const fetchScans = async () => {
+    const fetchInitial = async () => {
       try {
         const r = await fetch(api("/staged"));
         if (r.ok) setScans(await r.json());
       } catch (e) {
-        console.warn("Backend not reachable:", e.message);
+        console.warn("Backend unreachable:", e.message);
       }
     };
-    fetchScans();
+    fetchInitial();
 
     const socket = io(API_BASE || "http://localhost:4000");
     socketRef.current = socket;
@@ -120,12 +100,19 @@ export default function App() {
     return () => socket.disconnect();
   }, []);
 
+  // --- Duplicate helper ---
+  const scanSerialSet = useMemo(() => new Set(scans.map((s) => s.serial?.toUpperCase())), [scans]);
+  const findDuplicates = (serial) => scans.filter((s) => s.serial?.toUpperCase() === serial.toUpperCase());
+
+  // --- Scanner detected ---
   const onDetected = (rawText) => {
     const parsed = parseQrPayload(rawText);
+    if (!parsed.serial) return;
+
     ensureBeep();
     setPending({
-      serial: parsed.serial || rawText,
-      raw: parsed.raw || rawText,
+      serial: parsed.serial,
+      raw: parsed.raw,
       capturedAt: new Date().toISOString(),
     });
     setQrExtras({
@@ -137,15 +124,10 @@ export default function App() {
     setStatus("Captured — review & Confirm");
   };
 
-  const discardPending = () => {
-    setPending(null);
-    setQrExtras({ grade: "", railType: "", spec: "", lengthM: "" });
-    setWagon1Id(""); setWagon2Id(""); setWagon3Id("");
-    setStatus("Ready");
-  };
-
+  // --- Save pending scan ---
   const confirmPending = async () => {
-    if (!pending) return alert("Nothing to save yet.");
+    if (!pending?.serial) return alert("Nothing to save.");
+
     const rec = {
       serial: pending.serial,
       stage: "received",
@@ -153,12 +135,12 @@ export default function App() {
       wagon1Id,
       wagon2Id,
       wagon3Id,
-      timestamp: new Date().toISOString(),
       grade: qrExtras.grade,
       railType: qrExtras.railType,
       spec: qrExtras.spec,
       lengthM: qrExtras.lengthM,
       raw: pending.raw,
+      timestamp: new Date().toISOString(),
     };
 
     setStatus("Saving…");
@@ -169,9 +151,13 @@ export default function App() {
         body: JSON.stringify(rec),
       });
       const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || "Save failed");
+      if (!resp.ok) throw new Error(data?.error || "Save failed");
+
+      setScans((prev) => [{ ...rec, id: data.id }, ...prev]);
       setPending(null);
-      setWagon1Id(""); setWagon2Id(""); setWagon3Id("");
+      setWagon1Id("");
+      setWagon2Id("");
+      setWagon3Id("");
       setStatus("Ready");
     } catch (e) {
       alert(e.message || "Failed to save");
@@ -179,33 +165,40 @@ export default function App() {
     }
   };
 
+  const discardPending = () => {
+    setPending(null);
+    setQrExtras({ grade: "", railType: "", spec: "", lengthM: "" });
+    setStatus("Ready");
+  };
+
+  // --- Delete scan ---
   const handleRemoveScan = (id) => setRemovePrompt(id);
   const confirmRemoveScan = async () => {
     if (!removePrompt) return;
     try {
-      const resp = await fetch(api(`/api/staged/${removePrompt}`), { method: "DELETE" });
+      const resp = await fetch(api(`/remove-scan/${removePrompt}`), { method: "DELETE" });
       if (!resp.ok) throw new Error("Failed to remove scan");
       setScans((prev) => prev.filter((s) => s.id !== removePrompt));
       setRemovePrompt(null);
+      setStatus("Scan removed");
     } catch (e) {
-      alert(e.message || "Failed to remove scan");
+      alert(e.message);
       setRemovePrompt(null);
     }
   };
   const discardRemovePrompt = () => setRemovePrompt(null);
 
+  // --- Export ---
   const exportToExcel = async () => {
     setStatus("Exporting…");
     try {
       const resp = await fetch(api("/export-to-excel"), { method: "POST" });
       if (!resp.ok) throw new Error(await resp.text() || "Export failed");
       const blob = await resp.blob();
-      const href = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = href;
+      a.href = URL.createObjectURL(blob);
       a.download = `Master_${Date.now()}.xlsm`;
       a.click();
-      URL.revokeObjectURL(href);
     } catch (e) {
       alert(e.message);
     } finally {
@@ -215,12 +208,13 @@ export default function App() {
 
   return (
     <div className="container" style={{ paddingTop: 20, paddingBottom: 20 }}>
+      {/* Remove confirmation */}
       {removePrompt && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "grid", placeItems: "center", zIndex: 50 }}>
-          <div className="card" style={{ padding: 20 }}>
-            <h3>Confirm Removal</h3>
-            <p>Are you sure you want to remove this staged scan?</p>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "grid", placeItems: "center" }}>
+          <div className="card" style={{ padding: 16 }}>
+            <h3>Confirm Delete</h3>
+            <p>Are you sure you want to delete this scan?</p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
               <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
             </div>
@@ -232,9 +226,9 @@ export default function App() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <button className="btn btn-outline" onClick={() => setView("home")}>Home</button>
-            <span className="brand" onClick={() => setView("home")}>Rail Inventory</span>
+            <span className="brand" style={{ cursor: "pointer" }} onClick={() => setView("home")}>Rail Inventory</span>
           </div>
-          <div>Status: {status}</div>
+          <div className="status">Status: {status}</div>
         </div>
       </header>
 
@@ -245,45 +239,32 @@ export default function App() {
           <section className="card">
             <h3>Scanner</h3>
             <Scanner onDetected={onDetected} />
-            {pending && <div className="notice"><strong>Pending:</strong> {pending.serial}</div>}
+            {pending && <div className="notice">Pending: {pending.serial}</div>}
           </section>
 
           <section className="card">
             <h3>Controls</h3>
-            <div className="grid" style={{ gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-              <div>
-                <label>Operator</label>
-                <input className="input" value={operator} onChange={e => setOperator(e.target.value)} />
-              </div>
-              <div>
-                <label>Wagon 1 ID</label>
-                <input className="input" value={wagon1Id} onChange={e => setWagon1Id(e.target.value)} />
-              </div>
-              <div>
-                <label>Wagon 2 ID</label>
-                <input className="input" value={wagon2Id} onChange={e => setWagon2Id(e.target.value)} />
-              </div>
-              <div>
-                <label>Wagon 3 ID</label>
-                <input className="input" value={wagon3Id} onChange={e => setWagon3Id(e.target.value)} />
-              </div>
-              <div>
-                <label>Grade</label>
-                <input className="input" value={qrExtras.grade} readOnly />
-              </div>
-              <div>
-                <label>Rail Type</label>
-                <input className="input" value={qrExtras.railType} readOnly />
-              </div>
-              <div>
-                <label>Spec</label>
-                <input className="input" value={qrExtras.spec} readOnly />
-              </div>
-              <div>
-                <label>Length (m)</label>
-                <input className="input" value={qrExtras.lengthM} readOnly />
-              </div>
-              <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <div style={{ display: "grid", gap: 12 }}>
+              <label>Operator</label>
+              <input className="input" value={operator} onChange={e => setOperator(e.target.value)} />
+
+              <label>Wagon 1 ID</label>
+              <input className="input" value={wagon1Id} onChange={e => setWagon1Id(e.target.value)} />
+              <label>Wagon 2 ID</label>
+              <input className="input" value={wagon2Id} onChange={e => setWagon2Id(e.target.value)} />
+              <label>Wagon 3 ID</label>
+              <input className="input" value={wagon3Id} onChange={e => setWagon3Id(e.target.value)} />
+
+              <label>Grade</label>
+              <input className="input" value={qrExtras.grade} readOnly />
+              <label>Rail Type</label>
+              <input className="input" value={qrExtras.railType} readOnly />
+              <label>Spec</label>
+              <input className="input" value={qrExtras.spec} readOnly />
+              <label>Length (m)</label>
+              <input className="input" value={qrExtras.lengthM} readOnly />
+
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <button className="btn btn-outline" onClick={discardPending} disabled={!pending}>Discard Pending</button>
                 <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
                 <button className="btn" onClick={exportToExcel}>Export Excel (.xlsm)</button>
@@ -293,18 +274,16 @@ export default function App() {
 
           <section className="card" style={{ gridColumn: "1 / -1" }}>
             <h3>Staged Scans</h3>
-            <div className="list">
-              {scans.length === 0 && <div style={{ color: "var(--muted)" }}>No scans yet.</div>}
-              {scans.map((s) => (
-                <div key={s.id} className="item">
-                  <div><strong>{s.serial}</strong> ({s.operator})</div>
-                  <div>W1: {s.wagon1Id || "-"} | W2: {s.wagon2Id || "-"} | W3: {s.wagon3Id || "-"}</div>
-                  <div>{s.grade} • {s.railType} • {s.spec} • {s.lengthM}m</div>
-                  <div>{s.stage} • {new Date(s.timestamp).toLocaleString()}</div>
-                  <button className="btn btn-outline" onClick={() => handleRemoveScan(s.id)}>Delete</button>
-                </div>
-              ))}
-            </div>
+            {scans.length === 0 && <div style={{ color: "var(--muted)" }}>No scans yet</div>}
+            {scans.map(s => (
+              <div key={s.id} className="item">
+                <div><strong>{s.serial}</strong> ({s.operator})</div>
+                <div>W1: {s.wagon1Id || "-"} | W2: {s.wagon2Id || "-"} | W3: {s.wagon3Id || "-"}</div>
+                <div>{s.grade} • {s.railType} • {s.spec} • {s.lengthM}m</div>
+                <div>{s.stage} • {new Date(s.timestamp).toLocaleString()}</div>
+                <button className="btn btn-outline" onClick={() => handleRemoveScan(s.id)}>Delete</button>
+              </div>
+            ))}
           </section>
         </div>
       )}
