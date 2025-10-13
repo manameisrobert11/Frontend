@@ -1,3 +1,4 @@
+// src/App.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
@@ -30,7 +31,7 @@ export default function App() {
   const [status, setStatus] = useState('Ready');
   const [scans, setScans] = useState([]);
 
-  // StartPage first, white background
+  // Show StartPage first (white background)
   const [showStart, setShowStart] = useState(true);
 
   // Controls
@@ -38,8 +39,8 @@ export default function App() {
   const [wagonId1, setWagonId1] = useState('');
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
-  const [receivedAt, setReceivedAt] = useState(''); // plain text inputs
-  const [loadedAt, setLoadedAt]   = useState('');
+  const [receivedAt, setReceivedAt] = useState(''); // plain text
+  const [loadedAt, setLoadedAt] = useState('');     // plain text
 
   // Pending capture + parsed extras
   const [pending, setPending] = useState(null);
@@ -65,7 +66,7 @@ export default function App() {
   const okBeep = () => ensureBeep(1500);
   const warnBeep = () => ensureBeep(800);
 
-  // Load staged on mount (normalize wagonId keys)
+  // Load staged on mount (normalize wagonId keys from legacy backend)
   useEffect(() => {
     (async () => {
       try {
@@ -84,7 +85,7 @@ export default function App() {
     })();
   }, []);
 
-  // Dups
+  // Duplicates
   const scanSerialSet = useMemo(() => {
     const s = new Set();
     for (const r of scans) if (r?.serial) s.add(String(r.serial).trim().toUpperCase());
@@ -236,7 +237,7 @@ export default function App() {
     }
   };
 
-  // Export to Excel
+  // Export to Excel (also used on StartPage via onExport)
   const exportToExcel = async () => {
     try {
       const resp = await fetch(api('/export-to-excel'), { method: 'POST' });
@@ -267,11 +268,18 @@ export default function App() {
 
   // ---------- RENDER ----------
 
-  // 1) START PAGE (white background, Start Scanning does the navigation)
+  // 1) START PAGE (your component, white background)
   if (showStart) {
     return (
-      <div style={{ minHeight:'100vh', background:'#fff', color:'inherit' }}>
-        <StartPage onContinue={() => setShowStart(false)} />
+      <div style={{ minHeight:'100vh', background:'#fff' }}>
+        <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
+          <StartPage
+            onContinue={() => setShowStart(false)}
+            onExport={exportToExcel}
+            operator={operator}
+            setOperator={setOperator}
+          />
+        </div>
       </div>
     );
   }
@@ -288,11 +296,7 @@ export default function App() {
               <div className="status">{status}</div>
             </div>
           </div>
-
-          <div style={{ display:'flex', gap:8 }}>
-            <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
-            <button className="btn" onClick={exportToExcel}>Export to Excel</button>
-          </div>
+          <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
         </div>
       </header>
 
@@ -361,13 +365,17 @@ export default function App() {
             </div>
           </div>
 
-          <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
+          {/* Actions row — now includes Export to Excel */}
+          <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
             <button
               className="btn btn-outline"
               onClick={() => { setPending(null); setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' }); setStatus('Ready'); }}
             >
               Discard
+            </button>
+            <button className="btn" onClick={exportToExcel}>
+              Export to Excel
             </button>
           </div>
         </section>
@@ -409,7 +417,7 @@ export default function App() {
       <footer className="footer">
         <div className="footer-inner">
           <span>© {new Date().getFullYear()} Premium Star Graphics</span>
-          <span className="tag">Rail Inventory • v1.9</span>
+          <span className="tag">Rail Inventory • v2.1</span>
         </div>
       </footer>
 
