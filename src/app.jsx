@@ -68,13 +68,21 @@ export default function App() {
   const okBeep = () => ensureBeep(1500);
   const warnBeep = () => ensureBeep(800);
 
-  // Load staged on mount
+  // Load staged on mount (normalize wagonId keys)
   useEffect(() => {
     (async () => {
       try {
         const resp = await fetch(api('/staged'));
         const data = await resp.json().catch(() => []);
-        if (Array.isArray(data)) setScans(data);
+        if (Array.isArray(data)) {
+          const normalized = data.map((r) => ({
+            ...r,
+            wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+            wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+            wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+          }));
+          setScans(normalized);
+        }
       } catch (e) { console.error(e); }
     })();
   }, []);
@@ -154,13 +162,16 @@ export default function App() {
     setStatus('Captured — review & Confirm');
   };
 
-  // Remove staged scan
+  // Remove staged scan (legacy route)
   const handleRemoveScan = (scanId) => setRemovePrompt(scanId);
   const confirmRemoveScan = async () => {
     if (!removePrompt) return;
     try {
-      const resp = await fetch(api(`/remove-scan/${removePrompt}`), { method: 'DELETE' });
-      if (!resp.ok) throw new Error('Failed to remove scan');
+      const resp = await fetch(api(`/staged/${removePrompt}`), { method: 'DELETE' });
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        throw new Error(errText || 'Failed to remove scan');
+      }
       setScans(prev => prev.filter(scan => scan.id !== removePrompt));
       setRemovePrompt(null);
       setStatus('Scan removed successfully');
@@ -172,9 +183,12 @@ export default function App() {
   };
   const discardRemovePrompt = () => setRemovePrompt(null);
 
-  // Confirm & Save
+  // Confirm & Save (legacy save route)
   const confirmPending = async () => {
-    if (!pending?.serial) { alert('Nothing to save yet. Scan a code first.'); return; }
+    if (!pending?.serial || !String(pending.serial).trim()) {
+      alert('Nothing to save yet. Scan a code first.');
+      return;
+    }
     const dupNow = findDuplicates(pending.serial);
     if (dupNow.length > 0 &&
         !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)) {
@@ -182,7 +196,7 @@ export default function App() {
     }
 
     const rec = {
-      serial: pending.serial,
+      serial: String(pending.serial).trim(),
       stage: 'received',
       operator,
       wagonId1,
@@ -198,21 +212,30 @@ export default function App() {
     };
 
     try {
-      const resp = await fetch(api('/save-scan'), {
+      const resp = await fetch(api('/scan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
       });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(data?.error || 'Save failed');
 
-      setScans(prev => [{ id: data.id || Date.now(), ...rec }, ...prev]);
+      let data = null;
+      try { data = await resp.json(); } catch {}
+
+      if (!resp.ok) {
+        const text = data?.error || data?.message || (await resp.text().catch(() => ''));
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+
+      const newId = data?.id || Date.now();
+      setScans(prev => [{ id: newId, ...rec }, ...prev]);
+
       setPending(null);
       setQrExtras({ grade:'', railType:'', spec:'', lengthM:'' });
       setStatus('Saved to staged');
     } catch (e) {
-      console.error(e);
-      alert(e.message || 'Failed to save');
+      console.error('Save failed:', e);
+      alert(`Save failed: ${e.message}`);
+      setStatus('Save failed');
     }
   };
 
@@ -375,7 +398,7 @@ export default function App() {
       <footer className="footer">
         <div className="footer-inner">
           <span>© {new Date().getFullYear()} Premium Star Graphics</span>
-          <span className="tag">Rail Inventory • v1.8</span>
+          <span className="tag">Rail Inventory • v1.8 (legacy routes)</span>
         </div>
       </footer>
 
