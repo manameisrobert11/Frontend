@@ -228,6 +228,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rec),
+        qrRaw: pending.raw || String(pending.serial),
       });
 
       let data = null;
@@ -478,3 +479,4 @@ export default function App() {
     </div>
   );
 }
+
