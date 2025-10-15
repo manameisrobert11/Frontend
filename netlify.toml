@@ -9,7 +9,7 @@
 # Proxy API to Render
 [[redirects]]
   from = "/api/*"
-  to = "https://backend-test-xfo3.onrender.com/api/:splat"
+  to = "https://backend-test-4-13qw.onrender.com"
   status = 200
   force = true
 
@@ -18,3 +18,4 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
