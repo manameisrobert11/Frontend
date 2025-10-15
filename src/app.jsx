@@ -331,6 +331,35 @@ export default function App() {
           )}
         </section>
 
+        const exportXlsxWithImages = async () => {
+  try {
+    const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(text || `HTTP ${resp.status}`);
+    }
+    const dispo = resp.headers.get('Content-Disposition') || '';
+    const match = dispo.match(/filename="?([^"]+)"?/i);
+    const filename = match?.[1] || `Master_QR_${Date.now()}.xlsx`;
+
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus(`Exported ${filename}`);
+  } catch (e) {
+    console.error('Export (images) failed:', e);
+    alert(`Export (images) failed: ${e.message}`);
+    setStatus('Export (images) failed');
+  }
+};
+
+
         <section className="card">
           <h3>Controls</h3>
           <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
@@ -388,6 +417,11 @@ export default function App() {
               Discard
             </button>
             <button className="btn" onClick={exportToExcel}>Export to Excel</button>
+
+            <button className="btn" onClick={exportXlsxWithImages}>
+  Export XLSX (with QR images)
+</button>
+
           </div>
         </section>
 
@@ -479,4 +513,5 @@ export default function App() {
     </div>
   );
 }
+
 
