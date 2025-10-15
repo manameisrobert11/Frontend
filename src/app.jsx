@@ -82,6 +82,7 @@ export default function App() {
   const okBeep = () => ensureBeep(1500);
   const warnBeep = () => ensureBeep(800);
 
+  // Load staged on mount (normalize wagon keys)
   useEffect(() => {
     (async () => {
       try {
@@ -93,6 +94,8 @@ export default function App() {
             wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
             wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
             wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+            receivedAt: r.receivedAt ?? r.recievedAt ?? '', // tolerate both spellings
+            loadedAt: r.loadedAt ?? '',
           }));
           setScans(normalized);
         }
@@ -221,14 +224,14 @@ export default function App() {
       railType: qrExtras.railType,
       spec: qrExtras.spec,
       lengthM: qrExtras.lengthM,
+      qrRaw: pending.raw || String(pending.serial), // <-- make sure QR text is saved
     };
 
     try {
       const resp = await fetch(api('/scan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(rec),
-        qrRaw: pending.raw || String(pending.serial),
+        body: JSON.stringify(rec), // qrRaw is inside rec
       });
 
       let data = null;
@@ -244,6 +247,7 @@ export default function App() {
         {
           id: newId,
           ...rec,
+          // normalize for UI list
           wagonId1: rec.wagon1Id,
           wagonId2: rec.wagon2Id,
           wagonId3: rec.wagon3Id,
@@ -289,6 +293,37 @@ export default function App() {
     }
   };
 
+  // ✅ Define this helper ABOVE the return (not inside JSX)
+  const exportXlsxWithImages = async () => {
+    try {
+      const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      const dispo = resp.headers.get('Content-Disposition') || '';
+      const match = dispo.match(/filename="?([^"]+)"?/i);
+      const filename = match?.[1] || `Master_QR_${Date.now()}.xlsx`;
+
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setStatus(`Exported ${filename}`);
+    } catch (e) {
+      console.error('Export (images) failed:', e);
+      alert(`Export (images) failed: ${e.message}`);
+      setStatus('Export (images) failed');
+    }
+  };
+
+  // ---------- RENDER ----------
+
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
@@ -320,6 +355,7 @@ export default function App() {
       </header>
 
       <div className="grid" style={{ marginTop: 20 }}>
+        {/* Scanner */}
         <section className="card">
           <h3>Scanner</h3>
           <Scanner onDetected={onDetected} />
@@ -331,35 +367,7 @@ export default function App() {
           )}
         </section>
 
-        const exportXlsxWithImages = async () => {
-  try {
-    const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => '');
-      throw new Error(text || `HTTP ${resp.status}`);
-    }
-    const dispo = resp.headers.get('Content-Disposition') || '';
-    const match = dispo.match(/filename="?([^"]+)"?/i);
-    const filename = match?.[1] || `Master_QR_${Date.now()}.xlsx`;
-
-    const blob = await resp.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    setStatus(`Exported ${filename}`);
-  } catch (e) {
-    console.error('Export (images) failed:', e);
-    alert(`Export (images) failed: ${e.message}`);
-    setStatus('Export (images) failed');
-  }
-};
-
-
+        {/* Controls */}
         <section className="card">
           <h3>Controls</h3>
           <div className="controls-grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
@@ -417,14 +425,11 @@ export default function App() {
               Discard
             </button>
             <button className="btn" onClick={exportToExcel}>Export to Excel</button>
-
-            <button className="btn" onClick={exportXlsxWithImages}>
-  Export XLSX (with QR images)
-</button>
-
+            <button className="btn" onClick={exportXlsxWithImages}>Export XLSX (with QR images)</button>
           </div>
         </section>
 
+        {/* Staged Scans */}
         <section className="card">
           <h3>Staged Scans</h3>
           <div className="list">
@@ -461,10 +466,11 @@ export default function App() {
       <footer className="footer">
         <div className="footer-inner">
           <span>© {new Date().getFullYear()} Premium Star Graphics</span>
-          <span className="tag">Rail Inventory • v2.2</span>
+          <span className="tag">Rail Inventory • v2.3</span>
         </div>
       </footer>
 
+      {/* Remove confirmation */}
       {removePrompt && (
         <div
           role="dialog"
@@ -487,6 +493,7 @@ export default function App() {
         </div>
       )}
 
+      {/* Duplicate modal */}
       {dupPrompt && (
         <div
           role="dialog"
@@ -513,5 +520,3 @@ export default function App() {
     </div>
   );
 }
-
-
