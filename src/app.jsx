@@ -59,8 +59,7 @@ export default function App() {
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
-  // 🔒 Always static
-  const [loadedAt, setLoadedAt] = useState('WalvisBay');
+  const [loadedAt, setLoadedAt] = useState('WalvisBay'); // static
 
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -68,7 +67,7 @@ export default function App() {
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // Used to remount Scanner (force restart) for each “new scan”
+  // Used to remount Scanner (force restart) for each new scan
   const [scannerKey, setScannerKey] = useState(0);
 
   const beepRef = useRef(null);
@@ -98,7 +97,7 @@ export default function App() {
             wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
             wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
             wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
-            receivedAt: r.receivedAt ?? r.recievedAt ?? '', // tolerate both spellings
+            receivedAt: r.receivedAt ?? r.recievedAt ?? '',
             loadedAt: r.loadedAt ?? 'WalvisBay',
           }));
           setScans(normalized);
@@ -201,14 +200,12 @@ export default function App() {
   };
   const discardRemovePrompt = () => setRemovePrompt(null);
 
-  // 🔄 Reset everything needed to start a fresh scan and restart camera
+  // Reset everything needed to start a fresh scan and restart camera
   const resetForNextScan = () => {
     setPending(null);
     setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-    // keep operator & wagon IDs as you wish; if you want them cleared, uncomment:
-    // setWagonId1(''); setWagonId2(''); setWagonId3('');
     setReceivedAt('');
-    setLoadedAt('WalvisBay'); // keep static
+    setLoadedAt('WalvisBay');
     setStatus('Ready');
     setScannerKey((k) => k + 1); // remount scanner to “start new”
   };
@@ -234,7 +231,7 @@ export default function App() {
       wagon2Id: wagonId2,
       wagon3Id: wagonId3,
       receivedAt,
-      loadedAt: 'WalvisBay', // 🔒 enforce static every save
+      loadedAt: 'WalvisBay', // enforce static every save
       timestamp: new Date().toISOString(),
       grade: qrExtras.grade,
       railType: qrExtras.railType,
@@ -271,7 +268,7 @@ export default function App() {
       ]);
 
       setStatus('Saved — ready for next scan');
-      resetForNextScan(); // 🚀 immediately ready for the next scan
+      resetForNextScan(); // immediately ready for the next scan
     } catch (e) {
       console.error('Save failed:', e);
       alert(`Save failed: ${e.message}`);
@@ -335,14 +332,13 @@ export default function App() {
     }
   };
 
-  // ✅ Clean “Back to Start”: reset + show Start page
+  // Clean “Back to Start”: reset + show Start page
   const goBackToStart = () => {
     resetForNextScan();
     setShowStart(true);
   };
 
   // ---------- RENDER ----------
-
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
@@ -415,7 +411,7 @@ export default function App() {
             </div>
             <div>
               <label className="status">Loaded at</label>
-              {/* 🔒 Always WalvisBay */}
+              {/* Always WalvisBay */}
               <input className="input" value={loadedAt} readOnly />
             </div>
 
@@ -502,6 +498,68 @@ export default function App() {
         <div
           role="dialog"
           aria-modal="true"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)',
+            display: 'grid', placeItems: 'center', zIndex: 50, padding: 16
+          }}
         >
-          <div className="card" style={{ maxWidth: 520, width: '100%',
+          <div
+            className="card"
+            style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}
+          >
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: 16 }}>
+              <div style={{
+                width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center',
+                background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22
+              }}>⚠️</div>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ margin: 0 }}>Are you sure?</h3>
+                <div className="status" style={{ marginTop: 6 }}>
+                  Are you sure you want to remove this staged scan from the list?
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                  <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
+                  <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate modal */}
+      {dupPrompt && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)',
+            display: 'grid', placeItems: 'center', zIndex: 50, padding: 16
+          }}
+        >
+          <div
+            className="card"
+            style={{ maxWidth: 560, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}
+          >
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: 16 }}>
+              <div style={{
+                width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center',
+                background: 'rgba(251,191,36,.15)', color: 'rgb(202,138,4)', fontSize: 22
+              }}>⚠️</div>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ margin: 0 }}>Duplicate detected</h3>
+                <div className="status" style={{ marginTop: 6 }}>
+                  The serial <strong>{dupPrompt.serial}</strong> already exists in the staged list ({dupPrompt.matches.length}).
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                  <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>
+                  <button className="btn" onClick={handleDupContinue}>Continue anyway</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
