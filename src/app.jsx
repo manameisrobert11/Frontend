@@ -59,13 +59,17 @@ export default function App() {
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
-  const [loadedAt, setLoadedAt] = useState('');
+  // 🔒 Always static
+  const [loadedAt, setLoadedAt] = useState('WalvisBay');
 
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
 
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
+
+  // Used to remount Scanner (force restart) for each “new scan”
+  const [scannerKey, setScannerKey] = useState(0);
 
   const beepRef = useRef(null);
   const ensureBeep = (hz = 1500) => {
@@ -95,7 +99,7 @@ export default function App() {
             wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
             wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
             receivedAt: r.receivedAt ?? r.recievedAt ?? '', // tolerate both spellings
-            loadedAt: r.loadedAt ?? '',
+            loadedAt: r.loadedAt ?? 'WalvisBay',
           }));
           setScans(normalized);
         }
@@ -197,6 +201,18 @@ export default function App() {
   };
   const discardRemovePrompt = () => setRemovePrompt(null);
 
+  // 🔄 Reset everything needed to start a fresh scan and restart camera
+  const resetForNextScan = () => {
+    setPending(null);
+    setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
+    // keep operator & wagon IDs as you wish; if you want them cleared, uncomment:
+    // setWagonId1(''); setWagonId2(''); setWagonId3('');
+    setReceivedAt('');
+    setLoadedAt('WalvisBay'); // keep static
+    setStatus('Ready');
+    setScannerKey((k) => k + 1); // remount scanner to “start new”
+  };
+
   const confirmPending = async () => {
     if (!pending?.serial || !String(pending.serial).trim()) {
       alert('Nothing to save yet. Scan a code first.');
@@ -218,20 +234,20 @@ export default function App() {
       wagon2Id: wagonId2,
       wagon3Id: wagonId3,
       receivedAt,
-      loadedAt,
+      loadedAt: 'WalvisBay', // 🔒 enforce static every save
       timestamp: new Date().toISOString(),
       grade: qrExtras.grade,
       railType: qrExtras.railType,
       spec: qrExtras.spec,
       lengthM: qrExtras.lengthM,
-      qrRaw: pending.raw || String(pending.serial), // <-- make sure QR text is saved
+      qrRaw: pending.raw || String(pending.serial),
     };
 
     try {
       const resp = await fetch(api('/scan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(rec), // qrRaw is inside rec
+        body: JSON.stringify(rec),
       });
 
       let data = null;
@@ -247,7 +263,6 @@ export default function App() {
         {
           id: newId,
           ...rec,
-          // normalize for UI list
           wagonId1: rec.wagon1Id,
           wagonId2: rec.wagon2Id,
           wagonId3: rec.wagon3Id,
@@ -255,9 +270,8 @@ export default function App() {
         ...prev,
       ]);
 
-      setPending(null);
-      setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-      setStatus('Saved to staged');
+      setStatus('Saved — ready for next scan');
+      resetForNextScan(); // 🚀 immediately ready for the next scan
     } catch (e) {
       console.error('Save failed:', e);
       alert(`Save failed: ${e.message}`);
@@ -293,7 +307,6 @@ export default function App() {
     }
   };
 
-  // ✅ Define this helper ABOVE the return (not inside JSX)
   const exportXlsxWithImages = async () => {
     try {
       const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
@@ -322,6 +335,12 @@ export default function App() {
     }
   };
 
+  // ✅ Clean “Back to Start”: reset + show Start page
+  const goBackToStart = () => {
+    resetForNextScan();
+    setShowStart(true);
+  };
+
   // ---------- RENDER ----------
 
   if (showStart) {
@@ -329,7 +348,7 @@ export default function App() {
       <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
-            onContinue={() => setShowStart(false)}
+            onContinue={() => { resetForNextScan(); setShowStart(false); }}
             onExport={exportToExcel}
             operator={operator}
             setOperator={setOperator}
@@ -350,7 +369,7 @@ export default function App() {
               <div className="status">{status}</div>
             </div>
           </div>
-          <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
+          <button className="btn btn-outline" onClick={goBackToStart}>Back to Start</button>
         </div>
       </header>
 
@@ -358,7 +377,8 @@ export default function App() {
         {/* Scanner */}
         <section className="card">
           <h3>Scanner</h3>
-          <Scanner onDetected={onDetected} />
+          {/* key forces a fresh mount when we reset */}
+          <Scanner key={scannerKey} onDetected={onDetected} />
           {pending && (
             <div className="notice" style={{ marginTop: 10 }}>
               <div><strong>Pending Serial:</strong> {pending.serial}</div>
@@ -395,7 +415,8 @@ export default function App() {
             </div>
             <div>
               <label className="status">Loaded at</label>
-              <input className="input" value={loadedAt} onChange={(e) => setLoadedAt(e.target.value)} placeholder="" />
+              {/* 🔒 Always WalvisBay */}
+              <input className="input" value={loadedAt} readOnly />
             </div>
 
             <div>
@@ -418,6 +439,12 @@ export default function App() {
 
           <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
+            <button
+              className="btn btn-outline"
+              onClick={() => { resetForNextScan(); setStatus('Ready'); }}
+            >
+              Scan Next
+            </button>
             <button
               className="btn btn-outline"
               onClick={() => { setPending(null); setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' }); setStatus('Ready'); }}
@@ -466,7 +493,7 @@ export default function App() {
       <footer className="footer">
         <div className="footer-inner">
           <span>© {new Date().getFullYear()} Premium Star Graphics</span>
-          <span className="tag">Rail Inventory • v2.3</span>
+          <span className="tag">Rail Inventory • v2.4</span>
         </div>
       </footer>
 
@@ -477,46 +504,4 @@ export default function App() {
           aria-modal="true"
           style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
         >
-          <div className="card" style={{ maxWidth: 520, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(220,38,38,.1)', color: 'rgb(220,38,38)', fontSize: 22 }}>⚠️</div>
-              <div style={{ flex: 1 }}>
-                <h3 style={{ margin: 0 }}>Are you sure?</h3>
-                <div className="status" style={{ marginTop: 6 }}>Are you sure you want to remove this staged scan from the list?</div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-                  <button className="btn btn-outline" onClick={discardRemovePrompt}>Cancel</button>
-                  <button className="btn" onClick={confirmRemoveScan}>Confirm</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Duplicate modal */}
-      {dupPrompt && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,.55)', display: 'grid', placeItems: 'center', zIndex: 50, padding: 16 }}
-        >
-          <div className="card" style={{ maxWidth: 560, width: '100%', border: '1px solid var(--border)', boxShadow: '0 20px 60px rgba(2,6,23,.35)' }}>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-              <div style={{ width: 40, height: 40, borderRadius: 9999, display: 'grid', placeItems: 'center', background: 'rgba(251,191,36,.15)', color: 'rgb(202,138,4)', fontSize: 22 }}>⚠️</div>
-              <div style={{ flex: 1 }}>
-                <h3 style={{ margin: 0 }}>Duplicate detected</h3>
-                <div className="status" style={{ marginTop: 6 }}>
-                  The serial <strong>{dupPrompt.serial}</strong> already exists in the staged list ({dupPrompt.matches.length}).
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-                  <button className="btn btn-outline" onClick={handleDupDiscard}>Discard</button>
-                  <button className="btn" onClick={handleDupContinue}>Continue anyway</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+          <div className="card" style={{ maxWidth: 520, width: '100%',
