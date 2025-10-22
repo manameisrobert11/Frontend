@@ -6,11 +6,11 @@ import App from './app.jsx';
 const root = createRoot(document.getElementById('root'));
 root.render(<App />);
 
-// Register SW after initial paint
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch((e) => {
-      console.warn('SW registration failed:', e);
-    });
+    navigator.serviceWorker
+      .register('/sw.js')        // served from public/
+      .catch((e) => console.warn('SW registration failed:', e));
   });
 }
+
