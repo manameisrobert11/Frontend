@@ -1,12 +1,18 @@
 /* public/sw.js */
-const VERSION = 'v6';
+const VERSION = 'app-shell-v1';
+const SHELL = `shell-${VERSION}`;
 const RUNTIME = `runtime-${VERSION}`;
-const ASSETS = `assets-${VERSION}`;
-const OFFLINE_URL = '/offline.html';
+const SHELL_URLS = [
+  '/',              // your SPA entry
+  '/index.html',
+  '/manifest.webmanifest',
+  '/icon-192.png',
+  '/icon-512.png',
+];
 
 self.addEventListener('install', (evt) => {
   evt.waitUntil(
-    caches.open(ASSETS).then((c) => c.addAll([OFFLINE_URL])).then(() => self.skipWaiting())
+    caches.open(SHELL).then((c) => c.addAll(SHELL_URLS)).then(() => self.skipWaiting())
   );
 });
 
@@ -15,84 +21,68 @@ self.addEventListener('activate', (evt) => {
     if ('navigationPreload' in self.registration) {
       try { await self.registration.navigationPreload.enable(); } catch {}
     }
-    const keep = new Set([ASSETS, RUNTIME]);
+    const keep = new Set([SHELL, RUNTIME]);
     const names = await caches.keys();
     await Promise.all(names.map((n) => (keep.has(n) ? null : caches.delete(n))));
     await self.clients.claim();
   })());
 });
 
-function isHttp(url) {
-  try { return new URL(url).protocol.startsWith('http'); } catch { return false; }
-}
-function sameOrigin(url) {
-  try { return new URL(url).origin === self.location.origin; } catch { return false; }
-}
+const isHttp = (u) => { try { return new URL(u).protocol.startsWith('http'); } catch { return false; } };
+const sameOrigin = (u) => { try { return new URL(u).origin === self.location.origin; } catch { return false; } };
 
 self.addEventListener('fetch', (evt) => {
   const req = evt.request;
-
-  // Only handle GET requests
   if (req.method !== 'GET') return;
 
-  const urlStr = req.url;
-  const url = new URL(urlStr);
+  const url = req.url;
+  if (!isHttp(url) || !sameOrigin(url)) return;
 
-  // Ignore non-http(s) (e.g. chrome-extension://) and cross-origin
-  if (!isHttp(urlStr) || !sameOrigin(urlStr)) return;
-
-  // 1) Navigations: network → preload → offline fallback
+  // ✅ Navigations → App Shell (index.html), even when offline
   if (req.mode === 'navigate') {
     evt.respondWith((async () => {
+      const cache = await caches.open(SHELL);
       try {
+        // Try preload / network, keep cache fresh
         const preload = 'navigationPreload' in self.registration ? await evt.preloadResponse : null;
-        if (preload) return preload;
-        const net = await fetch(req);
+        const net = preload || await fetch(req);
+        cache.put('/index.html', net.clone());
         return net;
       } catch {
-        const cache = await caches.open(ASSETS);
-        const offline = await cache.match(OFFLINE_URL);
-        return offline || new Response('<h1>Offline</h1>', { headers: { 'Content-Type': 'text/html' } });
+        const cached = await cache.match('/index.html');
+        return cached || new Response('<h1>Offline</h1>', { headers: { 'Content-Type': 'text/html' } });
       }
     })());
     return;
   }
 
-  // 2) Static same-origin assets: cache-first (safe cache.put only on OK/basic responses)
-  const isLikelyStatic =
-    url.pathname.startsWith('/assets/') ||
-    /\.(?:js|css|png|jpg|jpeg|gif|svg|webp|ico|woff2?)$/i.test(url.pathname);
+  // Cache-first for same-origin static assets
+  const p = new URL(url).pathname;
+  const isStatic = p.startsWith('/assets/') || /\.(?:js|css|png|jpe?g|gif|svg|webp|ico|woff2?)$/i.test(p);
 
-  if (isLikelyStatic) {
+  if (isStatic) {
     evt.respondWith((async () => {
       const cache = await caches.open(RUNTIME);
       const cached = await cache.match(req);
       if (cached) return cached;
-
       try {
         const resp = await fetch(req);
-        if (resp && resp.ok && resp.type === 'basic') {
-          cache.put(req, resp.clone());
-        }
+        if (resp.ok && resp.type === 'basic') cache.put(req, resp.clone());
         return resp;
       } catch {
-        // return something valid even on failure
         return new Response('', { status: 504, statusText: 'Gateway Timeout' });
       }
     })());
     return;
   }
 
-  // 3) Everything else same-origin GET: network-first (no caching)
+  // Default: network-first for other same-origin GETs
   evt.respondWith((async () => {
-    try {
-      return await fetch(req);
-    } catch {
-      // If it was cached earlier somehow, serve it; else a small fallback
+    try { return await fetch(req); }
+    catch {
       const cache = await caches.open(RUNTIME);
       const cached = await cache.match(req);
-      if (cached) return cached;
-      return new Response('Network error', { status: 408 });
+      return cached || new Response('Offline', { status: 408 });
     }
   })());
 });
