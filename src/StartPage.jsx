@@ -1,13 +1,7 @@
-// src/StartPage.jsx
+// StartPage.jsx
 import React, { useEffect, useState } from 'react';
 
-export default function StartPage({
-  onContinue,            // NEW: preferred callback
-  onStartScan,           // legacy support
-  onExport,
-  operator,
-  setOperator
-}) {
+export default function StartPage({ onContinue, onStartScan, onExport, operator, setOperator }) {
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
@@ -20,10 +14,11 @@ export default function StartPage({
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   });
 
-  // Calls onContinue if provided; otherwise falls back to onStartScan.
+  // prefer onContinue, fallback to onStartScan for backward-compat
   const handleStart = () => {
-    if (typeof onContinue === 'function') return onContinue();
-    if (typeof onStartScan === 'function') return onStartScan();
+    const fn = onContinue || onStartScan;
+    if (typeof fn === 'function') fn();
+    else console.warn('StartPage: no onContinue/onStartScan handler provided');
   };
 
   return (
@@ -37,8 +32,8 @@ export default function StartPage({
         </div>
 
         <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <button className="btn" onClick={handleStart}>Start Scanning</button>
-          <button className="btn btn-outline" onClick={onExport}>Export Excel (.xlsm)</button>
+          <button type="button" className="btn" onClick={handleStart}>Start Scanning</button>
+          <button type="button" className="btn btn-outline" onClick={onExport}>Export Excel (.xlsm)</button>
         </div>
       </section>
 
