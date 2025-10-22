@@ -1,28 +1,27 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover"
-    />
+ <head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Rail Inventory PWA</title>
 
-    <title>Rail Inventory PWA</title>
+  <!-- Manifest (must be served from /public root) -->
+  <link rel="manifest" href="/manifest.webmanifest" />
 
-    <!-- PWA manifest (served from /public at the web root) -->
-    <link rel="manifest" href="/manifest.webmanifest" />
+  <!-- Icons -->
+  <link rel="icon" href="/icon-192.png" sizes="192x192" />
+  <link rel="apple-touch-icon" href="/icon-512.png" />
 
-    <!-- Icons (also in /public) -->
-    <link rel="icon" href="/icon-192.png" sizes="192x192" />
-    <link rel="apple-touch-icon" href="/icon-512.png" />
+  <!-- PWA meta -->
+  <meta name="theme-color" content="#1a1a1a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+</head>
 
-    <!-- Theme color for the address bar / splash -->
-    <meta name="theme-color" content="#1a1a1a" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
+
