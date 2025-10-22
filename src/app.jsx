@@ -1,8 +1,6 @@
-// src/app.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
-import { addOutbox, syncOutbox, getAllOutbox } from './offlineQueue.js'; // offline helpers
 import './app.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
@@ -11,7 +9,17 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-// ---- QR parsing ----
+/* -------------------- Offline Queue helpers -------------------- */
+const LS_KEY = 'offline_scan_queue_v1';
+const loadQueue = () => {
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }
+  catch { return []; }
+};
+const saveQueue = (q) => localStorage.setItem(LS_KEY, JSON.stringify(q));
+const enqueue = (rec) => { const q = loadQueue(); q.push(rec); saveQueue(q); };
+const dequeueAll = () => { const q = loadQueue(); saveQueue([]); return q; };
+
+/* -------------------- QR parsing -------------------- */
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -45,22 +53,10 @@ function parseQrPayload(raw) {
   }
 
   const lengthM = tokens.find((t) => /^\d{1,3}(\.\d+)?m$/i.test(t)) || '';
-  if (grade && railType && grade === railType) grade = '';
-  return { raw: clean, serial, grade, railType, spec, lengthM };
-}
 
-// POST helper
-async function postScan(rec) {
-  const resp = await fetch(api('/scan'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(rec),
-  });
-  if (!resp.ok) {
-    const msg = (await resp.text().catch(() => '')) || `HTTP ${resp.status}`;
-    throw new Error(msg);
-  }
-  return resp.json().catch(() => ({}));
+  if (grade && railType && grade === railType) grade = '';
+
+  return { raw: clean, serial, grade, railType, spec, lengthM };
 }
 
 export default function App() {
@@ -73,7 +69,8 @@ export default function App() {
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
-  const [loadedAt] = useState('WalvisBay'); // static
+  // Loaded at is static “WalvisBay”
+  const [loadedAt] = useState('WalvisBay');
 
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -81,28 +78,23 @@ export default function App() {
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  const [scanSessionId, setScanSessionId] = useState(1); // for Scan Next re-mount
-
-  // beeps (ignore play errors on mobile)
   const beepRef = useRef(null);
   const ensureBeep = (hz = 1500) => {
+    if (!beepRef.current) {
+      const dataUri = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
+      beepRef.current = new Audio(dataUri);
+    }
     try {
-      if (!beepRef.current) {
-        const dataUri =
-          'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
-        const a = new Audio();
-        a.src = dataUri;
-        beepRef.current = a;
-      }
       beepRef.current.playbackRate = Math.max(0.5, Math.min(2, hz / 1500));
       beepRef.current.currentTime = 0;
+      // Safari may block autoplay — ignore error
       beepRef.current.play().catch(() => {});
     } catch {}
   };
   const okBeep = () => ensureBeep(1500);
   const warnBeep = () => ensureBeep(800);
 
-  // load staged
+  /* Load staged on mount (normalize wagon keys) */
   useEffect(() => {
     (async () => {
       try {
@@ -125,22 +117,31 @@ export default function App() {
     })();
   }, []);
 
-  // sync any offline items on load/online
+  /* Flush any offline-saved scans when we come online / on mount */
   useEffect(() => {
-    const trySync = async () => {
-      if (!navigator.onLine) return;
-      try {
-        const before = (await getAllOutbox()).length;
-        if (before > 0) setStatus('Syncing offline items…');
-        const synced = await syncOutbox(postScan);
-        if (synced > 0) setStatus(`Synced ${synced} offline item(s)`);
-      } catch (e) {
-        console.warn('Outbox sync failed:', e);
+    const flush = async () => {
+      const batch = dequeueAll();
+      if (!batch.length) return;
+      for (const rec of batch) {
+        try {
+          const resp = await fetch(api('/scan'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(rec),
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+          const data = await resp.json().catch(() => ({}));
+          setScans(prev => [{ id: data?.id || Date.now(), ...rec }, ...prev]);
+        } catch (e) {
+          // Still failing — put back and stop so we retry later
+          enqueue(rec);
+          break;
+        }
       }
     };
-    trySync();
-    window.addEventListener('online', trySync);
-    return () => window.removeEventListener('online', trySync);
+    flush();
+    window.addEventListener('online', flush);
+    return () => window.removeEventListener('online', flush);
   }, []);
 
   const scanSerialSet = useMemo(() => {
@@ -241,7 +242,10 @@ export default function App() {
       return;
     }
     const dupNow = findDuplicates(pending.serial);
-    if (dupNow.length > 0 && !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)) {
+    if (
+      dupNow.length > 0 &&
+      !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)
+    ) {
       return;
     }
 
@@ -253,7 +257,7 @@ export default function App() {
       wagon2Id: wagonId2,
       wagon3Id: wagonId3,
       receivedAt,
-      loadedAt, // static
+      loadedAt, // static "WalvisBay"
       timestamp: new Date().toISOString(),
       grade: qrExtras.grade,
       railType: qrExtras.railType,
@@ -263,30 +267,46 @@ export default function App() {
     };
 
     try {
-      if (!navigator.onLine) {
-        await addOutbox(rec);
-        const tempId = Date.now();
-        setScans((prev) => [{ id: tempId, ...rec }, ...prev]);
-        setPending(null);
-        setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-        setStatus('Saved locally (offline) — will sync when online');
-        return;
+      const resp = await fetch(api('/scan'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rec),
+      });
+
+      let data = null;
+      try { data = await resp.json(); } catch {}
+
+      if (!resp.ok) {
+        const text = data?.error || data?.message || (await resp.text().catch(() => ''));
+        throw new Error(text || `HTTP ${resp.status}`);
       }
 
-      const data = await postScan(rec);
       const newId = data?.id || Date.now();
-      setScans((prev) => [{ id: newId, ...rec }, ...prev]);
+      setScans((prev) => [
+        {
+          id: newId,
+          ...rec,
+          wagonId1: rec.wagon1Id,
+          wagonId2: rec.wagon2Id,
+          wagonId3: rec.wagon3Id,
+        },
+        ...prev,
+      ]);
+
+      // Prep for next scan
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
     } catch (e) {
-      // queue offline on error
-      await addOutbox(rec);
-      const tempId = Date.now();
-      setScans((prev) => [{ id: tempId, ...rec }, ...prev]);
+      // Offline / network error → save locally and show immediately
+      enqueue(rec);
+      setScans((prev) => [
+        { id: Date.now(), ...rec, _offline: true },
+        ...prev,
+      ]);
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-      setStatus('Server unavailable — saved locally & will auto-sync');
+      setStatus('Saved locally (offline) — will sync when back online');
     }
   };
 
@@ -346,13 +366,24 @@ export default function App() {
     }
   };
 
-  // ---------- RENDER ----------
+  const handleScanNext = () => {
+    setPending(null);
+    setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
+    setWagonId1('');
+    setWagonId2('');
+    setWagonId3('');
+    setReceivedAt('');
+    setStatus('Ready for next scan');
+  };
+
+  /* -------------------- RENDER -------------------- */
+
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
         <div className="container" style={{ paddingTop: 24, paddingBottom: 24 }}>
           <StartPage
-            onContinue={() => { setShowStart(false); setScanSessionId((x) => x + 1); }}
+            onContinue={() => setShowStart(false)}
             onExport={exportToExcel}
             operator={operator}
             setOperator={setOperator}
@@ -373,12 +404,7 @@ export default function App() {
               <div className="status">{status}</div>
             </div>
           </div>
-          <button
-            className="btn btn-outline"
-            onClick={() => { setShowStart(true); setPending(null); }}
-          >
-            Back to Start
-          </button>
+          <button className="btn btn-outline" onClick={() => setShowStart(true)}>Back to Start</button>
         </div>
       </header>
 
@@ -386,26 +412,13 @@ export default function App() {
         {/* Scanner */}
         <section className="card">
           <h3>Scanner</h3>
-          <Scanner key={scanSessionId} onDetected={onDetected} />
+          <Scanner onDetected={onDetected} />
           {pending && (
             <div className="notice" style={{ marginTop: 10 }}>
               <div><strong>Pending Serial:</strong> {pending.serial}</div>
               <div className="meta">Captured at: {new Date(pending.capturedAt).toLocaleString()}</div>
             </div>
           )}
-          <div style={{ marginTop: 10 }}>
-            <button
-              className="btn btn-outline"
-              onClick={() => {
-                setPending(null);
-                setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-                setStatus('Ready for next scan');
-                setScanSessionId((x) => x + 1);
-              }}
-            >
-              Scan Next
-            </button>
-          </div>
         </section>
 
         {/* Controls */}
@@ -459,6 +472,7 @@ export default function App() {
 
           <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
+            <button className="btn btn-outline" onClick={handleScanNext}>Scan Next</button>
             <button
               className="btn btn-outline"
               onClick={() => { setPending(null); setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' }); setStatus('Ready'); }}
@@ -476,7 +490,10 @@ export default function App() {
           <div className="list">
             {scans.map((s) => (
               <div key={s.id} className="row">
-                <div className="title">{s.serial}</div>
+                <div className="title">
+                  {s.serial}
+                  {s._offline && <span className="tag" style={{ marginLeft: 8 }}>offline</span>}
+                </div>
                 <div className="meta">
                   {s.stage} • {s.operator} • {new Date(s.timestamp || Date.now()).toLocaleString()}
                 </div>
@@ -504,11 +521,10 @@ export default function App() {
         </section>
       </div>
 
-      {/* Footer (fixed tags) */}
       <footer className="footer">
         <div className="footer-inner">
-          <span>© {new Date().getFullYear()} Top Notch Solutions</span>
-          <span className="tag">Rail Inventory • v1 (offline-ready)</span>
+          <span>© {new Date().getFullYear()} Premium Star Graphics</span>
+          <span className="tag">Rail Inventory • v2.4</span>
         </div>
       </footer>
 
