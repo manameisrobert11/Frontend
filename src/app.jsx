@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
-import { addOutbox, syncOutbox } from './offlineQueue.js'; // <-- offline outbox helpers
+import { addOutbox, syncOutbox, getAllOutbox } from './offlineQueue.js'; // offline helpers
 import './app.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
@@ -11,7 +11,7 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-// ---- QR parsing (length/spec/railType; no grade duplication) ----
+// ---- QR parsing ----
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -46,11 +46,10 @@ function parseQrPayload(raw) {
 
   const lengthM = tokens.find((t) => /^\d{1,3}(\.\d+)?m$/i.test(t)) || '';
   if (grade && railType && grade === railType) grade = '';
-
   return { raw: clean, serial, grade, railType, spec, lengthM };
 }
 
-// POST helper used online and during outbox sync
+// POST helper
 async function postScan(rec) {
   const resp = await fetch(api('/scan'), {
     method: 'POST',
@@ -74,7 +73,7 @@ export default function App() {
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
-  const [loadedAt] = useState('WalvisBay'); // <- static as requested
+  const [loadedAt] = useState('WalvisBay'); // static
 
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -82,15 +81,13 @@ export default function App() {
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
-  // used to force re-mount of Scanner for "Scan Next"
-  const [scanSessionId, setScanSessionId] = useState(1);
+  const [scanSessionId, setScanSessionId] = useState(1); // for Scan Next re-mount
 
-  // ----- beeps -----
+  // beeps (ignore play errors on mobile)
   const beepRef = useRef(null);
   const ensureBeep = (hz = 1500) => {
     try {
       if (!beepRef.current) {
-        // super tiny inline wav
         const dataUri =
           'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
         const a = new Audio();
@@ -99,14 +96,13 @@ export default function App() {
       }
       beepRef.current.playbackRate = Math.max(0.5, Math.min(2, hz / 1500));
       beepRef.current.currentTime = 0;
-      // Many mobile browsers restrict auto play; ignore NotSupportedError
       beepRef.current.play().catch(() => {});
     } catch {}
   };
   const okBeep = () => ensureBeep(1500);
   const warnBeep = () => ensureBeep(800);
 
-  // Load staged on mount (normalize wagon keys)
+  // load staged
   useEffect(() => {
     (async () => {
       try {
@@ -129,13 +125,13 @@ export default function App() {
     })();
   }, []);
 
-  // Try to sync any offline items on load and when back online
+  // sync any offline items on load/online
   useEffect(() => {
     const trySync = async () => {
       if (!navigator.onLine) return;
       try {
-        const countBefore = (await (await import('./offlineQueue.js')).getAllOutbox()).length;
-        if (countBefore > 0) setStatus('Syncing offline items…');
+        const before = (await getAllOutbox()).length;
+        if (before > 0) setStatus('Syncing offline items…');
         const synced = await syncOutbox(postScan);
         if (synced > 0) setStatus(`Synced ${synced} offline item(s)`);
       } catch (e) {
@@ -245,10 +241,7 @@ export default function App() {
       return;
     }
     const dupNow = findDuplicates(pending.serial);
-    if (
-      dupNow.length > 0 &&
-      !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)
-    ) {
+    if (dupNow.length > 0 && !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)) {
       return;
     }
 
@@ -260,13 +253,13 @@ export default function App() {
       wagon2Id: wagonId2,
       wagon3Id: wagonId3,
       receivedAt,
-      loadedAt, // static "WalvisBay"
+      loadedAt, // static
       timestamp: new Date().toISOString(),
       grade: qrExtras.grade,
       railType: qrExtras.railType,
       spec: qrExtras.spec,
       lengthM: qrExtras.lengthM,
-      qrRaw: pending.raw || String(pending.serial), // save raw QR text
+      qrRaw: pending.raw || String(pending.serial),
     };
 
     try {
@@ -282,14 +275,12 @@ export default function App() {
 
       const data = await postScan(rec);
       const newId = data?.id || Date.now();
-
       setScans((prev) => [{ id: newId, ...rec }, ...prev]);
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
     } catch (e) {
-      // server/network issue → queue offline
-      console.warn('Online save failed, queued for later:', e);
+      // queue offline on error
       await addOutbox(rec);
       const tempId = Date.now();
       setScans((prev) => [{ id: tempId, ...rec }, ...prev]);
@@ -356,7 +347,6 @@ export default function App() {
   };
 
   // ---------- RENDER ----------
-
   if (showStart) {
     return (
       <div style={{ minHeight: '100vh', background: '#fff' }}>
@@ -396,7 +386,6 @@ export default function App() {
         {/* Scanner */}
         <section className="card">
           <h3>Scanner</h3>
-          {/* key forces a fresh mount for "Scan Next" */}
           <Scanner key={scanSessionId} onDetected={onDetected} />
           {pending && (
             <div className="notice" style={{ marginTop: 10 }}>
@@ -407,11 +396,11 @@ export default function App() {
           <div style={{ marginTop: 10 }}>
             <button
               className="btn btn-outline"
-              onClick={() => { // Scan Next = confirm or discard first, then reset scanner view
+              onClick={() => {
                 setPending(null);
                 setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
                 setStatus('Ready for next scan');
-                setScanSessionId((x) => x + 1); // re-mounts Scanner cleanly
+                setScanSessionId((x) => x + 1);
               }}
             >
               Scan Next
@@ -515,10 +504,11 @@ export default function App() {
         </section>
       </div>
 
+      {/* Footer (fixed tags) */}
       <footer className="footer">
         <div className="footer-inner">
-          <span>© {new Date().getFullYear()} Top Notch Solutions/span>
-          <span className="tag">Rail Inventory • v1 </span>
+          <span>© {new Date().getFullYear()} Top Notch Solutions</span>
+          <span className="tag">Rail Inventory • v1 (offline-ready)</span>
         </div>
       </footer>
 
