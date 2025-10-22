@@ -494,8 +494,8 @@ export default function App() {
 
       <footer className="footer">
         <div className="footer-inner">
-          <span>© {new Date().getFullYear()} Premium Star Graphics</span>
-          <span className="tag">Rail Inventory • v2.4</span>
+          <span>© {new Date().getFullYear()} Top Notch Solutions</span>
+          <span className="tag">Rail Inventory • v1</span>
         </div>
       </footer>
 
@@ -549,3 +549,4 @@ export default function App() {
     </div>
   );
 }
+
