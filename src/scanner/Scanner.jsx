@@ -5,34 +5,63 @@ import { BrowserMultiFormatReader } from '@zxing/browser';
 export default function Scanner({ onDetected, fps = 10 }) {
   const videoRef = useRef(null);
   const [active, setActive] = useState(false);
-  const codeReaderRef = useRef(null);
+  const readerRef = useRef(null);
+  const streamRef = useRef(null);
+  const mounted = useRef(false);
+
+  const stopStream = () => {
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => {
+          try { t.stop(); } catch {}
+        });
+        streamRef.current = null;
+      }
+    } catch {}
+  };
+
+  const safeResetReader = () => {
+    try {
+      const r = readerRef.current;
+      if (r && typeof r.reset === 'function') r.reset();
+    } catch {}
+  };
 
   useEffect(() => {
-    codeReaderRef.current = new BrowserMultiFormatReader();
-
+    mounted.current = true;
+    readerRef.current = new BrowserMultiFormatReader();
     return () => {
-      codeReaderRef.current?.reset();
-      stopScanner();
+      mounted.current = false;
+      safeResetReader();
+      stopStream();
     };
   }, []);
 
   const startScanner = async () => {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    if (!navigator.mediaDevices?.getUserMedia) {
       alert('Camera API not supported');
       return;
     }
-
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-      videoRef.current.srcObject = stream;
-      videoRef.current.play();
-
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' }
+      });
+      if (!mounted.current) return;
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
       setActive(true);
 
-      codeReaderRef.current.decodeFromVideoDevice(null, videoRef.current, (result, err) => {
+      const reader = readerRef.current;
+      if (!reader) return;
+
+      await reader.decodeFromVideoDevice(null, videoRef.current, (result, err) => {
+        if (!mounted.current) return;
         if (result) {
-          // QR code detected
-          if (onDetected) onDetected(result.getText());
+          const text = result.getText ? result.getText() : result.text;
+          if (text && onDetected) onDetected(text);
         }
       });
     } catch (err) {
@@ -43,11 +72,8 @@ export default function Scanner({ onDetected, fps = 10 }) {
 
   const stopScanner = () => {
     setActive(false);
-    if (videoRef.current && videoRef.current.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(track => track.stop());
-      videoRef.current.srcObject = null;
-    }
-    codeReaderRef.current?.reset();
+    stopStream();
+    safeResetReader();
   };
 
   return (
@@ -55,6 +81,8 @@ export default function Scanner({ onDetected, fps = 10 }) {
       <video
         ref={videoRef}
         style={{ width: '100%', borderRadius: 8, background: '#000' }}
+        muted
+        playsInline
       />
       <div style={{ display: 'flex', gap: 8 }}>
         {!active ? (
