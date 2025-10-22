@@ -3,17 +3,11 @@ const VERSION = 'app-shell-v1';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = `runtime-${VERSION}`;
 const SHELL_URLS = [
-  '/',              // your SPA entry
-  '/index.html',
-  '/manifest.webmanifest',
-  '/icon-192.png',
-  '/icon-512.png',
+  '/', '/index.html', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png',
 ];
 
 self.addEventListener('install', (evt) => {
-  evt.waitUntil(
-    caches.open(SHELL).then((c) => c.addAll(SHELL_URLS)).then(() => self.skipWaiting())
-  );
+  evt.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_URLS)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (evt) => {
@@ -23,7 +17,7 @@ self.addEventListener('activate', (evt) => {
     }
     const keep = new Set([SHELL, RUNTIME]);
     const names = await caches.keys();
-    await Promise.all(names.map((n) => (keep.has(n) ? null : caches.delete(n))));
+    await Promise.all(names.map(n => keep.has(n) ? null : caches.delete(n)));
     await self.clients.claim();
   })());
 });
@@ -34,16 +28,14 @@ const sameOrigin = (u) => { try { return new URL(u).origin === self.location.ori
 self.addEventListener('fetch', (evt) => {
   const req = evt.request;
   if (req.method !== 'GET') return;
-
   const url = req.url;
   if (!isHttp(url) || !sameOrigin(url)) return;
 
-  // ✅ Navigations → App Shell (index.html), even when offline
+  // ✅ SPA navigations => serve app shell (index.html)
   if (req.mode === 'navigate') {
     evt.respondWith((async () => {
       const cache = await caches.open(SHELL);
       try {
-        // Try preload / network, keep cache fresh
         const preload = 'navigationPreload' in self.registration ? await evt.preloadResponse : null;
         const net = preload || await fetch(req);
         cache.put('/index.html', net.clone());
@@ -56,10 +48,9 @@ self.addEventListener('fetch', (evt) => {
     return;
   }
 
-  // Cache-first for same-origin static assets
+  // Cache-first for static assets
   const p = new URL(url).pathname;
-  const isStatic = p.startsWith('/assets/') || /\.(?:js|css|png|jpe?g|gif|svg|webp|ico|woff2?)$/i.test(p);
-
+  const isStatic = p.startsWith('/assets/') || /\.(js|css|png|jpe?g|gif|svg|webp|ico|woff2?)$/i.test(p);
   if (isStatic) {
     evt.respondWith((async () => {
       const cache = await caches.open(RUNTIME);
@@ -76,7 +67,7 @@ self.addEventListener('fetch', (evt) => {
     return;
   }
 
-  // Default: network-first for other same-origin GETs
+  // Network-first for everything else
   evt.respondWith((async () => {
     try { return await fetch(req); }
     catch {
