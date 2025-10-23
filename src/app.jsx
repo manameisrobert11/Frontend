@@ -9,17 +9,7 @@ const api = (p) => {
   return API_BASE ? `${API_BASE}${path}` : `/api${path}`;
 };
 
-/* -------------------- Offline Queue helpers -------------------- */
-const LS_KEY = 'offline_scan_queue_v1';
-const loadQueue = () => {
-  try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }
-  catch { return []; }
-};
-const saveQueue = (q) => localStorage.setItem(LS_KEY, JSON.stringify(q));
-const enqueue = (rec) => { const q = loadQueue(); q.push(rec); saveQueue(q); };
-const dequeueAll = () => { const q = loadQueue(); saveQueue([]); return q; };
-
-/* -------------------- QR parsing -------------------- */
+// ---- QR parsing (length/spec/railType; no grade duplication) ----
 function parseQrPayload(raw) {
   const clean = String(raw || '')
     .replace(/[^\x20-\x7E]/g, ' ')
@@ -59,6 +49,56 @@ function parseQrPayload(raw) {
   return { raw: clean, serial, grade, railType, spec, lengthM };
 }
 
+// ---- IndexedDB offline queue ----
+const DB_NAME = 'rail-offline';
+const DB_VERSION = 1;
+const STORE = 'queue';
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbAdd(item) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).add(item);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function idbAll() {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbClear(ids) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    (ids || []).forEach(id => store.delete(id));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export default function App() {
   const [status, setStatus] = useState('Ready');
   const [scans, setScans] = useState([]);
@@ -69,8 +109,7 @@ export default function App() {
   const [wagonId2, setWagonId2] = useState('');
   const [wagonId3, setWagonId3] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
-  // Loaded at is static “WalvisBay”
-  const [loadedAt] = useState('WalvisBay');
+  const [loadedAt] = useState('WalvisBay'); // static as requested
 
   const [pending, setPending] = useState(null);
   const [qrExtras, setQrExtras] = useState({ grade: '', railType: '', spec: '', lengthM: '' });
@@ -78,70 +117,103 @@ export default function App() {
   const [dupPrompt, setDupPrompt] = useState(null);
   const [removePrompt, setRemovePrompt] = useState(null);
 
+  // pagination + total count
+  const [totalCount, setTotalCount] = useState(0);
+  const [nextCursor, setNextCursor] = useState(null);
+  const PAGE_SIZE = 200;
+
+  // beeps (guard to avoid NotSupportedError on some browsers)
   const beepRef = useRef(null);
   const ensureBeep = (hz = 1500) => {
-    if (!beepRef.current) {
-      const dataUri = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
-      beepRef.current = new Audio(dataUri);
-    }
     try {
+      if (!beepRef.current) {
+        const dataUri = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZAA=';
+        const audio = new Audio();
+        audio.src = dataUri;
+        beepRef.current = audio;
+      }
       beepRef.current.playbackRate = Math.max(0.5, Math.min(2, hz / 1500));
       beepRef.current.currentTime = 0;
-      // Safari may block autoplay — ignore error
-      beepRef.current.play().catch(() => {});
+      // Some environments block autoplay — ignore failure
+      const p = beepRef.current.play();
+      if (p && typeof p.then === 'function') p.catch(() => {});
     } catch {}
   };
   const okBeep = () => ensureBeep(1500);
   const warnBeep = () => ensureBeep(800);
 
-  /* Load staged on mount (normalize wagon keys) */
+  // initial load: total count + first page
   useEffect(() => {
     (async () => {
       try {
-        const resp = await fetch(api('/staged'));
-        const data = await resp.json().catch(() => []);
-        if (Array.isArray(data)) {
-          const normalized = data.map((r) => ({
-            ...r,
-            wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
-            wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
-            wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
-            receivedAt: r.receivedAt ?? r.recievedAt ?? '',
-            loadedAt: r.loadedAt ?? 'WalvisBay',
-          }));
-          setScans(normalized);
-        }
+        const [countResp, pageResp] = await Promise.all([
+          fetch(api('/staged/count')),
+          fetch(api(`/staged?limit=${PAGE_SIZE}`))
+        ]);
+        const countData = await countResp.json().catch(()=>({count:0}));
+        const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+
+        // normalize wagon keys
+        const normalized = (pageData.rows || []).map((r) => ({
+          ...r,
+          wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+          wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+          wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+          receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+          loadedAt: r.loadedAt ?? '',
+        }));
+
+        setScans(normalized);
+        setTotalCount(countData.count ?? pageData.total ?? 0);
+        setNextCursor(pageData.nextCursor ?? null);
       } catch (e) {
         console.error(e);
       }
     })();
   }, []);
 
-  /* Flush any offline-saved scans when we come online / on mount */
+  const loadMore = async () => {
+    if (!nextCursor) return;
+    const resp = await fetch(api(`/staged?limit=${PAGE_SIZE}&cursor=${nextCursor}`));
+    const data = await resp.json().catch(()=>({rows:[], nextCursor:null}));
+
+    const more = (data.rows || []).map((r) => ({
+      ...r,
+      wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+      wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+      wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+      receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+      loadedAt: r.loadedAt ?? '',
+    }));
+
+    setScans(prev => [...prev, ...more]);
+    setNextCursor(data.nextCursor ?? null);
+  };
+
+  // Auto-sync offline queue when online
   useEffect(() => {
-    const flush = async () => {
-      const batch = dequeueAll();
-      if (!batch.length) return;
-      for (const rec of batch) {
-        try {
-          const resp = await fetch(api('/scan'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(rec),
-          });
-          if (!resp.ok) throw new Error(await resp.text());
-          const data = await resp.json().catch(() => ({}));
-          setScans(prev => [{ id: data?.id || Date.now(), ...rec }, ...prev]);
-        } catch (e) {
-          // Still failing — put back and stop so we retry later
-          enqueue(rec);
-          break;
+    async function flushQueue() {
+      try {
+        const items = await idbAll();
+        if (items.length === 0) return;
+        const payload = items.map(x => x.payload);
+        const resp = await fetch(api('/scans/bulk'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: payload })
+        });
+        if (resp.ok) {
+          await idbClear(items.map(x => x.id));
+          setTotalCount(c => c + payload.length);
         }
+      } catch (e) {
+        console.warn('Offline queue flush failed:', e.message);
       }
-    };
-    flush();
-    window.addEventListener('online', flush);
-    return () => window.removeEventListener('online', flush);
+    }
+
+    window.addEventListener('online', flushQueue);
+    flushQueue();
+    return () => window.removeEventListener('online', flushQueue);
   }, []);
 
   const scanSerialSet = useMemo(() => {
@@ -226,6 +298,7 @@ export default function App() {
         throw new Error(errText || 'Failed to remove scan');
       }
       setScans((prev) => prev.filter((scan) => scan.id !== removePrompt));
+      setTotalCount(c => Math.max(0, c - 1));
       setRemovePrompt(null);
       setStatus('Scan removed successfully');
     } catch (e) {
@@ -241,13 +314,6 @@ export default function App() {
       alert('Nothing to save yet. Scan a code first.');
       return;
     }
-    const dupNow = findDuplicates(pending.serial);
-    if (
-      dupNow.length > 0 &&
-      !window.confirm(`Warning: "${pending.serial}" is already in the staged list (${dupNow.length} match). Continue and save anyway?`)
-    ) {
-      return;
-    }
 
     const rec = {
       serial: String(pending.serial).trim(),
@@ -257,13 +323,13 @@ export default function App() {
       wagon2Id: wagonId2,
       wagon3Id: wagonId3,
       receivedAt,
-      loadedAt, // static "WalvisBay"
+      loadedAt,
       timestamp: new Date().toISOString(),
       grade: qrExtras.grade,
       railType: qrExtras.railType,
       spec: qrExtras.spec,
       lengthM: qrExtras.lengthM,
-      qrRaw: pending.raw || String(pending.serial),
+      qrRaw: pending.raw || String(pending.serial), // save QR text (also used for images export)
     };
 
     try {
@@ -276,37 +342,23 @@ export default function App() {
       let data = null;
       try { data = await resp.json(); } catch {}
 
-      if (!resp.ok) {
-        const text = data?.error || data?.message || (await resp.text().catch(() => ''));
-        throw new Error(text || `HTTP ${resp.status}`);
-      }
+      if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const newId = data?.id || Date.now();
-      setScans((prev) => [
-        {
-          id: newId,
-          ...rec,
-          wagonId1: rec.wagon1Id,
-          wagonId2: rec.wagon2Id,
-          wagonId3: rec.wagon3Id,
-        },
-        ...prev,
-      ]);
+      setScans((prev) => [{ id: newId, ...rec }, ...prev]);
+      setTotalCount(c => c + 1);
 
-      // Prep for next scan
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
     } catch (e) {
-      // Offline / network error → save locally and show immediately
-      enqueue(rec);
-      setScans((prev) => [
-        { id: Date.now(), ...rec, _offline: true },
-        ...prev,
-      ]);
+      // Offline/failed: queue it to IndexedDB for later
+      await idbAdd({ payload: rec });
+      setScans((prev) => [{ id: Date.now(), ...rec }, ...prev]);
+      setTotalCount(c => c + 1);
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-      setStatus('Saved locally (offline) — will sync when back online');
+      setStatus('Saved locally (offline) — will sync');
     }
   };
 
@@ -340,6 +392,7 @@ export default function App() {
 
   const exportXlsxWithImages = async () => {
     try {
+      // backend accepts POST or GET
       const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
@@ -366,17 +419,7 @@ export default function App() {
     }
   };
 
-  const handleScanNext = () => {
-    setPending(null);
-    setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
-    setWagonId1('');
-    setWagonId2('');
-    setWagonId3('');
-    setReceivedAt('');
-    setStatus('Ready for next scan');
-  };
-
-  /* -------------------- RENDER -------------------- */
+  // ---------- RENDER ----------
 
   if (showStart) {
     return (
@@ -472,7 +515,6 @@ export default function App() {
 
           <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn" onClick={confirmPending} disabled={!pending}>Confirm & Save</button>
-            <button className="btn btn-outline" onClick={handleScanNext}>Scan Next</button>
             <button
               className="btn btn-outline"
               onClick={() => { setPending(null); setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' }); setStatus('Ready'); }}
@@ -486,14 +528,11 @@ export default function App() {
 
         {/* Staged Scans */}
         <section className="card">
-          <h3>Staged Scans</h3>
+          <h3>Staged Scans ({totalCount})</h3>
           <div className="list">
             {scans.map((s) => (
-              <div key={s.id} className="row">
-                <div className="title">
-                  {s.serial}
-                  {s._offline && <span className="tag" style={{ marginLeft: 8 }}>offline</span>}
-                </div>
+              <div key={s.id ?? `${s.serial}-${s.timestamp}`} className="row">
+                <div className="title">{s.serial}</div>
                 <div className="meta">
                   {s.stage} • {s.operator} • {new Date(s.timestamp || Date.now()).toLocaleString()}
                 </div>
@@ -518,13 +557,19 @@ export default function App() {
               </div>
             ))}
           </div>
+
+          {nextCursor && (
+            <div style={{ marginTop: 10 }}>
+              <button className="btn btn-outline" onClick={loadMore}>Load more</button>
+            </div>
+          )}
         </section>
       </div>
 
       <footer className="footer">
         <div className="footer-inner">
           <span>© {new Date().getFullYear()} Top Notch Solutions</span>
-          <span className="tag">Rail Inventory • v1</span>
+          <span className="tag">Rail Inventory • v1.0</span>
         </div>
       </footer>
 
@@ -578,4 +623,3 @@ export default function App() {
     </div>
   );
 }
-
