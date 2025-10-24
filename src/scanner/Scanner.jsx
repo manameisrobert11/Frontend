@@ -1,10 +1,7 @@
 // src/scanner/Scanner.jsx
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  BrowserMultiFormatReader,
-  BarcodeFormat,
-  DecodeHintType,
-} from '@zxing/browser';
+import { BrowserMultiFormatReader } from '@zxing/browser';
+import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 
 export default function Scanner({ onDetected, fps = 10 }) {
   const videoRef = useRef(null);
@@ -33,7 +30,7 @@ export default function Scanner({ onDetected, fps = 10 }) {
   const stopStream = () => {
     try {
       if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => {
+        streamRef.current.getTracks().forEach((t) => {
           try { t.stop(); } catch {}
         });
         streamRef.current = null;
@@ -62,7 +59,6 @@ export default function Scanner({ onDetected, fps = 10 }) {
 
   useEffect(() => {
     mounted.current = true;
-    // Pass hints to ZXing for better detection (distance/contrast)
     readerRef.current = new BrowserMultiFormatReader(buildHints());
 
     return () => {
@@ -77,12 +73,12 @@ export default function Scanner({ onDetected, fps = 10 }) {
   async function pickRearDeviceId() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const videos = devices.filter(d => d.kind === 'videoinput');
+      const videos = devices.filter((d) => d.kind === 'videoinput');
+      if (videos.length === 0) return undefined;
 
-      // Prefer labels that include "back" / "rear"
       const rear =
-        videos.find(d => /rear|back|environment/i.test(d.label)) ||
-        videos.find(d => d.label.toLowerCase().includes('wide')) ||
+        videos.find((d) => /rear|back|environment/i.test(d.label)) ||
+        videos.find((d) => d.label?.toLowerCase?.().includes('wide')) ||
         videos[0];
 
       return rear ? rear.deviceId : undefined;
@@ -98,21 +94,20 @@ export default function Scanner({ onDetected, fps = 10 }) {
     const caps = track.getCapabilities?.() || {};
     const settings = track.getSettings?.() || {};
 
-    // Try continuous autofocus / exposure / white balance (best effort)
+    // Best-effort continuous auto modes
     try {
       await track.applyConstraints({
         advanced: [
-          { focusMode: 'continuous' }, // not widely standardized, but harmless if ignored
+          { focusMode: 'continuous' },
           { exposureMode: 'continuous' },
           { whiteBalanceMode: 'continuous' },
         ],
       });
     } catch {}
 
-    // Torch (flash) availability
+    // Torch
     if (typeof caps.torch === 'boolean') {
       setHasTorch(true);
-      // default torch off
       try {
         await track.applyConstraints({ advanced: [{ torch: false }] });
       } catch {}
@@ -120,15 +115,15 @@ export default function Scanner({ onDetected, fps = 10 }) {
       setHasTorch(false);
     }
 
-    // Zoom capability (helps scan from further away by “zooming in”)
-    if (typeof caps.zoom === 'number' || (caps.zoom && typeof caps.zoom.min === 'number')) {
-      const min = caps.zoom.min ?? 1;
-      const max = caps.zoom.max ?? Math.max(1, settings.zoom || 1);
+    // Zoom
+    const zoomCaps = caps.zoom;
+    if (typeof zoomCaps === 'number' || (zoomCaps && typeof zoomCaps.min === 'number')) {
+      const min = (zoomCaps.min ?? 1);
+      const max = (zoomCaps.max ?? Math.max(1, settings.zoom || 1));
       setHasZoom(true);
       setZoomMin(min);
       setZoomMax(max);
 
-      // Start slightly zoomed in for better distance scanning, if available
       const initialZoom = Math.min(max, Math.max(min, (settings.zoom || min) * 1.5));
       setZoom(initialZoom);
       try {
@@ -138,13 +133,14 @@ export default function Scanner({ onDetected, fps = 10 }) {
       setHasZoom(false);
     }
 
-    // Exposure compensation (helps in very bright or very dark scenes)
-    if (caps.exposureCompensation) {
-      const { min, max, step } = caps.exposureCompensation;
+    // Exposure compensation
+    const expCaps = caps.exposureCompensation;
+    if (expCaps && (typeof expCaps.min === 'number' || typeof expCaps.max === 'number')) {
+      const { min = -2, max = 2, step = 1 } = expCaps;
       setHasExposureComp(true);
-      setExpMin(min ?? -2);
-      setExpMax(max ?? 2);
-      setExpStep(step ?? 1);
+      setExpMin(min);
+      setExpMax(max);
+      setExpStep(step);
       setExposure(settings.exposureCompensation ?? 0);
     } else {
       setHasExposureComp(false);
@@ -159,15 +155,13 @@ export default function Scanner({ onDetected, fps = 10 }) {
 
     setStatus('Starting camera...');
     try {
-      // Pick a rear camera when possible
       const deviceId = await pickRearDeviceId();
 
-      // Request high resolution and decent frame rate to help decode from distance
       const constraints = {
         video: {
           deviceId: deviceId ? { exact: deviceId } : undefined,
           facingMode: deviceId ? undefined : { ideal: 'environment' },
-          width: { ideal: 1920 },   // 1080p or better allows reading smaller QR from farther away
+          width: { ideal: 1920 },  // high resolution for distance decoding
           height: { ideal: 1080 },
           aspectRatio: { ideal: 16 / 9 },
           frameRate: { ideal: Math.min(30, Math.max(10, fps * 2)) },
@@ -194,14 +188,13 @@ export default function Scanner({ onDetected, fps = 10 }) {
       const reader = readerRef.current;
       if (!reader) return;
 
-      // ZXing video decode loop
       await reader.decodeFromVideoDevice(null, videoRef.current, (result, err) => {
         if (!mounted.current) return;
         if (result) {
           const text = result.getText ? result.getText() : result.text;
           if (text && onDetected) onDetected(text);
         }
-        // We intentionally ignore err here; ZXing keeps trying.
+        // Ignore errors; ZXing continues scanning.
       });
     } catch (err) {
       console.error('Camera access error:', err);
@@ -262,7 +255,6 @@ export default function Scanner({ onDetected, fps = 10 }) {
       const track = streamRef.current?.getVideoTracks?.()[0];
       if (!track?.applyConstraints) return;
       await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
-      // Some browsers refocus when constraints are re-applied.
     } catch {}
   };
 
@@ -272,13 +264,7 @@ export default function Scanner({ onDetected, fps = 10 }) {
 
       <video
         ref={videoRef}
-        style={{
-          width: '100%',
-          borderRadius: 8,
-          background: '#000',
-          // Hint for better readability of small codes: ensure the element is big
-          // so the camera preview is large and ZXing gets more pixels.
-        }}
+        style={{ width: '100%', borderRadius: 8, background: '#000' }}
         muted
         playsInline
         autoPlay
