@@ -1,4 +1,6 @@
+// src/App.jsx
 import React, { useEffect, useState, useRef, useMemo } from 'react';
+import { io } from 'socket.io-client';
 import Scanner from './scanner/Scanner.jsx';
 import StartPage from './StartPage.jsx';
 import './app.css';
@@ -122,7 +124,10 @@ export default function App() {
   const [nextCursor, setNextCursor] = useState(null);
   const PAGE_SIZE = 200;
 
-  // beeps (guard to avoid NotSupportedError on some browsers)
+  // Socket
+  const socketRef = useRef(null);
+
+  // beeps
   const beepRef = useRef(null);
   const ensureBeep = (hz = 1500) => {
     try {
@@ -134,7 +139,6 @@ export default function App() {
       }
       beepRef.current.playbackRate = Math.max(0.5, Math.min(2, hz / 1500));
       beepRef.current.currentTime = 0;
-      // Some environments block autoplay — ignore failure
       const p = beepRef.current.play();
       if (p && typeof p.then === 'function') p.catch(() => {});
     } catch {}
@@ -205,6 +209,22 @@ export default function App() {
         if (resp.ok) {
           await idbClear(items.map(x => x.id));
           setTotalCount(c => c + payload.length);
+          // Optional: pull fresh page so local temp ids reconcile
+          try {
+            const pageResp = await fetch(api(`/staged?limit=${PAGE_SIZE}`));
+            const pageData = await pageResp.json().catch(()=>({rows:[], nextCursor:null, total:0}));
+            const normalized = (pageData.rows || []).map((r) => ({
+              ...r,
+              wagonId1: r.wagonId1 ?? r.wagon1Id ?? '',
+              wagonId2: r.wagonId2 ?? r.wagon2Id ?? '',
+              wagonId3: r.wagonId3 ?? r.wagon3Id ?? '',
+              receivedAt: r.receivedAt ?? r.recievedAt ?? '',
+              loadedAt: r.loadedAt ?? '',
+            }));
+            setScans(normalized);
+            setNextCursor(pageData.nextCursor ?? null);
+            setTotalCount(pageData.total ?? normalized.length);
+          } catch {}
         }
       } catch (e) {
         console.warn('Offline queue flush failed:', e.message);
@@ -214,6 +234,66 @@ export default function App() {
     window.addEventListener('online', flushQueue);
     flushQueue();
     return () => window.removeEventListener('online', flushQueue);
+  }, []);
+
+  // Live sync via Socket.IO
+  useEffect(() => {
+    // Derive socket origin
+    const socketOrigin =
+      import.meta.env.VITE_SOCKET_URL
+      || (API_BASE
+            ? (() => {
+                try { return new URL(API_BASE, window.location.href).origin; } catch { return window.location.origin; }
+              })()
+            : window.location.origin);
+
+    const socket = io(socketOrigin, {
+      transports: ['websocket', 'polling'],
+      path: '/socket.io',
+      withCredentials: false,
+    });
+    socketRef.current = socket;
+
+    socket.on('new-scan', (row) => {
+      if (!row) return;
+      setScans((prev) => {
+        const hasId = row.id != null && prev.some((x) => String(x.id) === String(row.id));
+        const hasSerial = row.serial && prev.some((x) => String(x.serial).trim().toUpperCase() === String(row.serial).trim().toUpperCase());
+        if (hasId || hasSerial) return prev;
+        return [{ ...row }, ...prev];
+      });
+      setTotalCount((c) => c + 1);
+    });
+
+    socket.on('deleted-scan', ({ id }) => {
+      if (id == null) return;
+      setScans((prev) => {
+        const before = prev.length;
+        const next = prev.filter((x) => String(x.id) !== String(id));
+        if (next.length !== before) {
+          setTotalCount((c) => Math.max(0, c - 1));
+          setStatus('Scan removed (synced)');
+        }
+        return next;
+      });
+    });
+
+    socket.on('cleared-scans', () => {
+      setScans([]);
+      setTotalCount(0);
+      setNextCursor(null);
+      setStatus('All scans cleared (synced)');
+    });
+
+    return () => {
+      try {
+        socket.off('new-scan');
+        socket.off('deleted-scan');
+        socket.off('cleared-scans');
+        socket.disconnect();
+      } catch {}
+      socketRef.current = null;
+    };
   }, []);
 
   const scanSerialSet = useMemo(() => {
@@ -301,6 +381,7 @@ export default function App() {
       setTotalCount(c => Math.max(0, c - 1));
       setRemovePrompt(null);
       setStatus('Scan removed successfully');
+      // No need to do anything else: other clients will receive 'deleted-scan' via socket
     } catch (e) {
       console.error(e);
       alert(e.message || 'Failed to remove scan');
@@ -351,6 +432,7 @@ export default function App() {
       setPending(null);
       setQrExtras({ grade: '', railType: '', spec: '', lengthM: '' });
       setStatus('Saved to staged');
+      // Other clients will get 'new-scan' via socket; this client already added it locally
     } catch (e) {
       // Offline/failed: queue it to IndexedDB for later
       await idbAdd({ payload: rec });
@@ -392,7 +474,6 @@ export default function App() {
 
   const exportXlsxWithImages = async () => {
     try {
-      // backend accepts POST or GET
       const resp = await fetch(api('/export-xlsx-images'), { method: 'POST' });
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
@@ -487,7 +568,7 @@ export default function App() {
             </div>
 
             <div>
-              <label className="status">Recieved at</label>
+              <label className="status">Received at</label>
               <input className="input" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} placeholder="" />
             </div>
             <div>
@@ -543,7 +624,7 @@ export default function App() {
 
                 {(s.receivedAt || s.loadedAt) && (
                   <div className="meta">
-                    {s.receivedAt ? `Recieved at: ${s.receivedAt}` : ''}
+                    {s.receivedAt ? `Received at: ${s.receivedAt}` : ''}
                     {s.receivedAt && s.loadedAt ? ' • ' : ''}
                     {s.loadedAt ? `Loaded at: ${s.loadedAt}` : ''}
                   </div>
@@ -568,8 +649,8 @@ export default function App() {
 
       <footer className="footer">
         <div className="footer-inner">
-          <span>© {new Date().getFullYear()} Top Notch Solutions</span>
-          <span className="tag">Rail Inventory • v1.0</span>
+          <span>© {new Date().getFullYear()} Premium Star Graphics</span>
+          <span className="tag">Rail Inventory • v3.0</span>
         </div>
       </footer>
 
